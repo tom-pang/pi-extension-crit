@@ -3,18 +3,27 @@ import { createRoot } from "react-dom/client";
 import { PatchDiff, MultiFileDiff } from "@pierre/diffs/react";
 import type { FileDiffOptions } from "@pierre/diffs/react";
 
+interface CommitInfo {
+  hash: string;
+  message: string;
+  time: string;
+  diff: string;
+}
+
 interface DiffData {
   staged: string;
   unstaged: string;
   untracked: { path: string; content: string }[];
   repoName: string;
+  branch: string;
+  commits: CommitInfo[];
 }
 
 interface FileEntry {
   id: string;
   name: string;
   path: string;
-  section: "staged" | "unstaged" | "untracked";
+  section: "staged" | "unstaged" | "untracked" | "committed";
   additions: number;
   deletions: number;
   patch?: string;
@@ -31,12 +40,14 @@ const SECTION_COLORS = {
   staged: "#00cab1",
   unstaged: "#F59E0B",
   untracked: "#3B82F6",
+  committed: "#9CA3AF",
 } as const;
 
 const SECTION_LABELS = {
   staged: "Staged",
   unstaged: "Unstaged",
   untracked: "Untracked",
+  committed: "Committed",
 } as const;
 
 const diffOptions: FileDiffOptions<undefined> = {
@@ -84,8 +95,8 @@ function countChanges(patch: string): { additions: number; deletions: number } {
   return { additions, deletions };
 }
 
-/** Build file entries from diff data */
-function buildFileEntries(data: DiffData): FileEntry[] {
+/** Build file entries for working changes */
+function buildWorkingEntries(data: DiffData): FileEntry[] {
   const entries: FileEntry[] = [];
 
   if (data.staged.trim()) {
@@ -134,6 +145,34 @@ function buildFileEntries(data: DiffData): FileEntry[] {
   }
 
   return entries;
+}
+
+/** Build file entries for a specific commit */
+function buildCommitEntries(commit: CommitInfo): FileEntry[] {
+  const entries: FileEntry[] = [];
+  for (const patch of splitPatch(commit.diff)) {
+    const path = extractPathFromPatch(patch);
+    const { additions, deletions } = countChanges(patch);
+    entries.push({
+      id: `commit:${commit.hash}:${path}`,
+      name: path.split("/").pop() || path,
+      path,
+      section: "committed",
+      additions,
+      deletions,
+      patch,
+    });
+  }
+  return entries;
+}
+
+/** Check if there are any working changes */
+function hasWorkingChanges(data: DiffData): boolean {
+  return (
+    data.staged.trim().length > 0 ||
+    data.unstaged.trim().length > 0 ||
+    data.untracked.length > 0
+  );
 }
 
 // ─── Sidebar ───
@@ -202,6 +241,62 @@ function SidebarSection({
           onClick={() => onFileClick(f)}
         />
       ))}
+    </div>
+  );
+}
+
+// ─── Commit List ───
+
+function CommitList({
+  data,
+  selectedCommitId,
+  workingFileCount,
+  onSelect,
+}: {
+  data: DiffData;
+  selectedCommitId: string;
+  workingFileCount: number;
+  onSelect: (id: string) => void;
+}) {
+  const dirty = hasWorkingChanges(data);
+
+  return (
+    <div className="commit-list">
+      <div className="sidebar-section-header">
+        <span className="sidebar-section-label">Commits</span>
+      </div>
+
+      {dirty && (
+        <div
+          className={`commit-entry commit-entry-working ${selectedCommitId === "working" ? "active" : ""}`}
+          onClick={() => onSelect("working")}
+          style={selectedCommitId === "working" ? { borderLeftColor: "#E5C07B" } : undefined}
+        >
+          <div className="commit-entry-label">
+            <span className="commit-dot" style={{ background: "#E5C07B" }} />
+            Working Changes
+            <span className="commit-count">{workingFileCount}</span>
+          </div>
+        </div>
+      )}
+
+      {data.commits.map((commit) => {
+        const isActive = selectedCommitId === commit.hash;
+        return (
+          <div
+            key={commit.hash}
+            className={`commit-entry ${isActive ? "active" : ""}`}
+            onClick={() => onSelect(commit.hash)}
+            style={isActive ? { borderLeftColor: "rgba(255,255,255,0.3)" } : undefined}
+          >
+            <div className="commit-info">
+              <span className="commit-hash">{commit.hash.slice(0, 7)}</span>
+              <span className="commit-message">{commit.message}</span>
+              <span className="commit-time">{commit.time}</span>
+            </div>
+          </div>
+        );
+      })}
     </div>
   );
 }
@@ -280,26 +375,46 @@ function DiffView({ file }: { file: FileEntry }) {
 // ─── Main App ───
 
 function App({ data }: { data: DiffData }) {
-  const files = useMemo(() => buildFileEntries(data), [data]);
-  const filesMap = useMemo(() => new Map(files.map((f) => [f.id, f])), [files]);
+  const dirty = hasWorkingChanges(data);
+  const defaultCommitId = dirty ? "working" : (data.commits[0]?.hash ?? "working");
 
+  const [selectedCommitId, setSelectedCommitId] = useState<string>(defaultCommitId);
   const [openTabs, setOpenTabs] = useState<string[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
 
-  // Auto-select first file on load
+  // Files for current selection
+  const files = useMemo(() => {
+    if (selectedCommitId === "working") return buildWorkingEntries(data);
+    const commit = data.commits.find((c) => c.hash === selectedCommitId);
+    return commit ? buildCommitEntries(commit) : [];
+  }, [selectedCommitId, data]);
+
+  const filesMap = useMemo(() => new Map(files.map((f) => [f.id, f])), [files]);
+  const workingFileCount = useMemo(() => buildWorkingEntries(data).length, [data]);
+
+  // When commit selection changes, reset tabs and auto-select first file
   useEffect(() => {
-    if (files.length > 0 && activeId === null) {
+    if (files.length > 0) {
       const first = files[0];
       setOpenTabs([first.id]);
       setActiveId(first.id);
+    } else {
+      setOpenTabs([]);
+      setActiveId(null);
     }
-  }, [files]);
+  }, [selectedCommitId]);
 
-  // When data updates, clean up tabs that no longer exist
+  // When data updates (same commit), clean up tabs that no longer exist
   useEffect(() => {
     const validIds = new Set(files.map((f) => f.id));
-    setOpenTabs((prev) => prev.filter((id) => validIds.has(id)));
-    setActiveId((prev) => (prev && validIds.has(prev) ? prev : files[0]?.id || null));
+    setOpenTabs((prev) => {
+      const next = prev.filter((id) => validIds.has(id));
+      return next;
+    });
+    setActiveId((prev) => {
+      if (prev && validIds.has(prev)) return prev;
+      return files[0]?.id || null;
+    });
   }, [files]);
 
   const handleFileClick = useCallback((file: FileEntry) => {
@@ -318,7 +433,6 @@ function App({ data }: { data: DiffData }) {
         if (activeId === id) {
           const idx = prev.indexOf(id);
           const newActive = next[Math.min(idx, next.length - 1)] || null;
-          // setTimeout to avoid state update during render
           setTimeout(() => setActiveId(newActive), 0);
         }
         return next;
@@ -336,8 +450,13 @@ function App({ data }: { data: DiffData }) {
 
   const openTabSet = useMemo(() => new Set(openTabs), [openTabs]);
   const activeFile = activeId ? filesMap.get(activeId) : null;
+  const totalFiles = files.length;
 
-  if (files.length === 0) {
+  const handleCommitSelect = useCallback((id: string) => {
+    setSelectedCommitId(id);
+  }, []);
+
+  if (!dirty && data.commits.length === 0) {
     return <div className="empty-state">No changes</div>;
   }
 
@@ -347,19 +466,42 @@ function App({ data }: { data: DiffData }) {
       <div className="sidebar">
         <div className="sidebar-header">
           <span className="sidebar-repo">{data.repoName}</span>
-          <span className="sidebar-count">{files.length} file{files.length !== 1 ? "s" : ""}</span>
+          {data.branch && (
+            <span className="sidebar-branch">{data.branch}</span>
+          )}
+          <span className="sidebar-count">{totalFiles} file{totalFiles !== 1 ? "s" : ""}</span>
         </div>
+
+        <CommitList
+          data={data}
+          selectedCommitId={selectedCommitId}
+          workingFileCount={workingFileCount}
+          onSelect={handleCommitSelect}
+        />
+
         <div className="sidebar-files">
-          {(["staged", "unstaged", "untracked"] as const).map((s) => (
-            <SidebarSection
-              key={s}
-              section={s}
-              files={grouped[s]}
-              activeId={activeId}
-              openTabIds={openTabSet}
-              onFileClick={handleFileClick}
-            />
-          ))}
+          {selectedCommitId === "working" ? (
+            (["staged", "unstaged", "untracked"] as const).map((s) => (
+              <SidebarSection
+                key={s}
+                section={s}
+                files={grouped[s]}
+                activeId={activeId}
+                openTabIds={openTabSet}
+                onFileClick={handleFileClick}
+              />
+            ))
+          ) : (
+            files.map((f) => (
+              <SidebarFile
+                key={f.id}
+                file={f}
+                active={f.id === activeId}
+                tabbed={openTabSet.has(f.id)}
+                onClick={() => handleFileClick(f)}
+              />
+            ))
+          )}
         </div>
       </div>
 
@@ -442,4 +584,3 @@ try {
     JSON.stringify({ type: "viewer-ready" })
   );
 } catch {}
-

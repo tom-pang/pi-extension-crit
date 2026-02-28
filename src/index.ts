@@ -125,6 +125,77 @@ function writeShellHTML() {
   .stat-add { font-size: 10px; color: #00cab1; font-weight: 500; font-variant-numeric: tabular-nums; }
   .stat-del { font-size: 10px; color: #ff2e3f; font-weight: 500; font-variant-numeric: tabular-nums; }
 
+  /* ─── Commit list ─── */
+  .commit-list {
+    border-bottom: 1px solid rgba(255,255,255,0.08);
+    padding: 8px 0;
+    flex-shrink: 0;
+  }
+  .commit-entry {
+    padding: 6px 16px 6px 14px;
+    border-left: 2px solid transparent;
+    cursor: pointer;
+    transition: background 0.1s;
+  }
+  .commit-entry:hover { background: rgba(255,255,255,0.04); }
+  .commit-entry.active { background: rgba(255,255,255,0.07); }
+  .commit-entry-working .commit-entry-label {
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    font-size: 12px;
+    font-weight: 500;
+    color: rgba(255,255,255,0.85);
+  }
+  .commit-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    flex-shrink: 0;
+  }
+  .commit-count {
+    font-size: 10px;
+    color: rgba(255,255,255,0.25);
+    margin-left: auto;
+    background: rgba(255,255,255,0.06);
+    padding: 1px 6px;
+    border-radius: 8px;
+  }
+  .commit-info {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+  }
+  .commit-hash {
+    font-family: ui-monospace, 'SF Mono', monospace;
+    font-size: 11px;
+    color: rgba(255,255,255,0.35);
+    flex-shrink: 0;
+  }
+  .commit-message {
+    font-size: 12px;
+    color: rgba(255,255,255,0.7);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    flex: 1;
+    min-width: 0;
+  }
+  .commit-time {
+    font-size: 10px;
+    color: rgba(255,255,255,0.2);
+    flex-shrink: 0;
+    white-space: nowrap;
+  }
+  .sidebar-branch {
+    font-size: 11px;
+    color: rgba(255,255,255,0.3);
+    background: rgba(255,255,255,0.06);
+    padding: 1px 7px;
+    border-radius: 8px;
+    font-family: ui-monospace, 'SF Mono', monospace;
+  }
+
   /* ─── Main panel ─── */
   .main { flex: 1; display: flex; flex-direction: column; overflow: hidden; min-width: 0; }
 
