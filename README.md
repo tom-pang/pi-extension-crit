@@ -1,23 +1,23 @@
-# pi-extension-diffs
+# pi-extension-crit
 
-A [pi](https://github.com/badlogic/pi-mono/tree/main/packages/coding-agent) extension that adds a `/diffs` command to view git changes in a native macOS window.
+A [pi](https://github.com/badlogic/pi-mono/tree/main/packages/coding-agent) extension for inline code review feedback. Run `/crit`, review diffs in a native macOS window, leave comments on specific lines, close the window, and the agent gets your feedback automatically.
 
-Browse staged, unstaged, and untracked changes alongside branch commits — all rendered with syntax-highlighted diffs in a fast, native WKWebView window powered by [Glimpse](https://github.com/HazAT/glimpse).
+Built on [Glimpse](https://github.com/HazAT/glimpse) (native WKWebView) and [@pierre/diffs](https://www.npmjs.com/package/@pierre/diffs) (Shiki-powered syntax highlighting). Dracula theme.
 
-## Features
+## How it works
 
-- **`/diffs` command** — opens a native macOS window showing all git changes
-- **Commit navigator** — browse up to 5 commits on your branch, or last 5 on main
-- **Working changes** — staged, unstaged, and untracked files grouped by section
-- **Sidebar + tabs** — click files to open as tabs, switch between them instantly
-- **Syntax highlighting** — full Shiki-powered highlighting via [@pierre/diffs](https://www.npmjs.com/package/@pierre/diffs)
-- **Prewarm** — hidden window pre-loads the viewer on startup for near-instant `/diffs`
-- **Persistent window** — updates in place if already open, re-preloads after close
+1. You (or the agent) run `/crit`
+2. A native window opens showing your git diffs — staged, unstaged, untracked, and recent branch commits
+3. Hover over any line in a diff and click the `+` button to leave a comment
+4. Close the window when you're done
+5. Comments get written to `~/.pi/crit/<repo>/<timestamp>.md` and sent to the agent as a follow-up message
+
+So the agent reads your review feedback and acts on it. No copy-pasting, no switching contexts.
 
 ## Install
 
 ```bash
-pi install pi-extension-diffs
+pi install pi-extension-crit
 ```
 
 Or add to your pi settings manually:
@@ -26,66 +26,72 @@ Or add to your pi settings manually:
 // ~/.pi/agent/settings.json
 {
   "packages": [
-    "pi-extension-diffs"
+    "pi-extension-crit"
   ]
 }
 ```
 
-Then restart pi or run `/reload`.
+Then `/reload`.
 
 ## Requirements
 
-- **macOS** — uses native WKWebView windows via Glimpse
-- **git** — must be in a git repository
-- **bun** — required for building the viewer bundle (runs automatically on install)
+- **macOS** — native WKWebView window via Glimpse
+- **git** — must be in a git repo
+- **bun** — builds the viewer bundle
 
 ## Usage
 
 ```
-/diffs
+/crit
 ```
 
-That's it. The window shows:
+The command blocks until you close the window. If you left comments, they're written to disk and delivered to the agent. If you didn't, it just says so and moves on.
 
-1. **Commit list** at the top of the sidebar — your branch's commits (vs main/master) or last 5 if on main
-2. **Working Changes** entry if you have uncommitted changes (staged/unstaged/untracked)
-3. **File list** below — click to open files as tabs with syntax-highlighted diffs
+The comment file looks like:
 
-Switching between commits updates the file list. Tabs clear when you change commits.
+```markdown
+# Crit — my-repo
+
+Branch: feature/thing
+Date: 2026-03-19T14:30:00.000Z
+
+## src/foo.ts
+
+### L42 (new)
+
+This function should handle the nil case.
+
+## src/bar.go
+
+### L15 (old)
+
+Why mutex instead of channel here?
+```
 
 ## Development
 
 ```bash
-git clone https://github.com/HazAT/pi-extension-diffs.git
-cd pi-extension-diffs
-npm install  # installs deps + builds viewer bundle
-```
-
-To rebuild the viewer after making changes to `src/viewer.tsx`:
-
-```bash
+git clone https://github.com/HazAT/pi-extension-crit.git
+cd pi-extension-crit
+npm install
 npm run build
 ```
 
-Then point pi at your local clone:
+Point pi at your local clone:
 
 ```jsonc
-// ~/.pi/agent/settings.json
 {
   "packages": [
-    "/path/to/pi-extension-diffs"
+    "/path/to/pi-extension-crit"
   ]
 }
 ```
 
-## How it works
+## Tradeoffs
 
-The extension has two parts:
-
-- **`src/index.ts`** — pi extension that registers `/diffs`, gathers git data, manages the Glimpse window, and injects data into the viewer
-- **`src/viewer.tsx`** — React app bundled into `dist/viewer.js` at build time, rendering diffs with `@pierre/diffs` components
-
-On startup, a hidden window pre-loads the 10MB viewer bundle (which includes Shiki grammars for syntax highlighting). When you run `/diffs`, git data is injected and the window appears instantly.
+- The viewer bundle is ~10MB (Shiki grammars for syntax highlighting). A hidden window preloads it on startup so `/crit` opens fast, but it does eat some memory.
+- The `/crit` command blocks the agent while you review. This is intentional — the agent waits for your feedback before continuing.
+- Comments reference line numbers from the diff, not the final file. If lines shift between when you review and when the agent acts, the line numbers might be slightly off. The comment text gives enough context for the agent to figure it out.
 
 ## License
 

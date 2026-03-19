@@ -1,7 +1,8 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
 import { dirname, join, basename } from "node:path";
 import { fileURLToPath } from "node:url";
-import { writeFileSync, existsSync } from "node:fs";
+import { writeFileSync, existsSync, mkdirSync } from "node:fs";
+import { homedir } from "node:os";
 
 const baseDir = dirname(fileURLToPath(import.meta.url));
 const distDir = join(baseDir, "..", "dist");
@@ -15,6 +16,18 @@ let win: any = null;
 let openFn: any = null;
 let ready = false;
 let readyResolve: (() => void) | null = null;
+
+// Comment accumulation for the active /crit session
+interface CritComment {
+  id: string;
+  filePath: string;
+  lineNumber: number;
+  side: "additions" | "deletions";
+  text: string;
+}
+
+let activeComments: Map<string, CritComment> = new Map();
+let closeResolve: (() => void) | null = null;
 
 /**
  * Write shell.html to dist/ — a tiny HTML file with a loading spinner
@@ -30,8 +43,8 @@ function writeShellHTML() {
   * { box-sizing: border-box; margin: 0; padding: 0; }
   html, body { height: 100%; overflow: hidden; }
   body {
-    background: #0a0a0a;
-    color: #fbfbfb;
+    background: #282a36;
+    color: #f8f8f2;
     font-family: system-ui, -apple-system, sans-serif;
     -webkit-font-smoothing: antialiased;
   }
@@ -69,7 +82,7 @@ function writeShellHTML() {
   /* ─── Sidebar ─── */
   .sidebar {
     width: 260px; min-width: 260px;
-    background: #0e0e0e;
+    background: #21222c;
     border-right: 1px solid rgba(255,255,255,0.08);
     display: flex; flex-direction: column; overflow: hidden;
   }
@@ -117,8 +130,8 @@ function writeShellHTML() {
     margin-top: 1px; min-height: 13px;
   }
   .sidebar-file-stats { display: flex; gap: 6px; margin-top: 2px; }
-  .stat-add { font-size: 10px; color: #00cab1; font-weight: 500; font-variant-numeric: tabular-nums; }
-  .stat-del { font-size: 10px; color: #ff2e3f; font-weight: 500; font-variant-numeric: tabular-nums; }
+  .stat-add { font-size: 10px; color: #50fa7b; font-weight: 500; font-variant-numeric: tabular-nums; }
+  .stat-del { font-size: 10px; color: #ff5555; font-weight: 500; font-variant-numeric: tabular-nums; }
 
   /* ─── Commit list ─── */
   .commit-list {
@@ -195,7 +208,7 @@ function writeShellHTML() {
   .main { flex: 1; display: flex; flex-direction: column; overflow: hidden; min-width: 0; }
 
   .tab-bar {
-    display: flex; background: #0e0e0e;
+    display: flex; background: #21222c;
     border-bottom: 1px solid rgba(255,255,255,0.08);
     overflow-x: auto; flex-shrink: 0; -webkit-app-region: no-drag;
   }
@@ -215,6 +228,15 @@ function writeShellHTML() {
     cursor: pointer; padding: 0 2px; border-radius: 3px;
   }
   .tab-close:hover { color: rgba(255,255,255,0.7); background: rgba(255,255,255,0.1); }
+  .tab-comment-count {
+    font-size: 10px;
+    color: rgba(255,255,255,0.5);
+    background: rgba(255,255,255,0.1);
+    padding: 1px 5px;
+    border-radius: 6px;
+    min-width: 16px;
+    text-align: center;
+  }
 
   .main-content { flex: 1; overflow: hidden; position: relative; }
   .tab-panel { height: 100%; overflow-y: auto; overflow-x: hidden; }
@@ -229,11 +251,215 @@ function writeShellHTML() {
   }
 
   :root {
-    --diffs-dark: #fbfbfb;
-    --diffs-dark-bg: #0a0a0a;
-    --diffs-dark-addition-color: #00cab1;
-    --diffs-dark-deletion-color: #ff2e3f;
-    --diffs-dark-modified-color: #009fff;
+    --diffs-dark: #f8f8f2;
+    --diffs-dark-bg: #282a36;
+    --diffs-dark-addition-color: #50fa7b;
+    --diffs-dark-deletion-color: #ff5555;
+    --diffs-dark-modified-color: #8be9fd;
+  }
+
+  /* ─── Comment UI ─── */
+  .gutter-plus-btn {
+    width: 20px;
+    height: 20px;
+    border: none;
+    border-radius: 4px;
+    background: #bd93f9;
+    color: white;
+    font-size: 14px;
+    font-weight: 700;
+    line-height: 1;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    opacity: 0.85;
+    transition: opacity 0.1s, transform 0.1s;
+  }
+  .gutter-plus-btn:hover {
+    opacity: 1;
+    transform: scale(1.1);
+  }
+
+  .comment-form {
+    background: #44475a;
+    border: 1px solid rgba(59, 130, 246, 0.3);
+    border-radius: 8px;
+    padding: 12px;
+    margin: 8px 16px;
+  }
+  .comment-textarea {
+    width: 100%;
+    min-height: 72px;
+    background: #343746;
+    border: 1px solid rgba(255,255,255,0.1);
+    border-radius: 6px;
+    color: #f8f8f2;
+    font-family: system-ui, -apple-system, sans-serif;
+    font-size: 13px;
+    padding: 10px 12px;
+    resize: vertical;
+    outline: none;
+    transition: border-color 0.15s;
+  }
+  .comment-textarea:focus {
+    border-color: rgba(59, 130, 246, 0.5);
+  }
+  .comment-textarea::placeholder {
+    color: rgba(255,255,255,0.25);
+  }
+  .comment-form-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-top: 8px;
+  }
+  .comment-btn {
+    padding: 6px 14px;
+    border: none;
+    border-radius: 6px;
+    font-size: 12px;
+    font-weight: 500;
+    cursor: pointer;
+    transition: background 0.15s;
+  }
+  .comment-btn-cancel {
+    background: rgba(255,255,255,0.08);
+    color: rgba(255,255,255,0.6);
+  }
+  .comment-btn-cancel:hover {
+    background: rgba(255,255,255,0.12);
+  }
+  .comment-btn-submit {
+    background: #bd93f9;
+    color: white;
+  }
+  .comment-btn-submit:hover {
+    background: #a67bf5;
+  }
+  .comment-btn-submit:disabled {
+    opacity: 0.4;
+    cursor: default;
+  }
+
+  .comment-bubble {
+    background: #44475a;
+    border: 1px solid rgba(59, 130, 246, 0.2);
+    border-radius: 8px;
+    padding: 10px 14px;
+    margin: 6px 16px;
+  }
+  .comment-bubble-text {
+    font-size: 13px;
+    color: rgba(255,255,255,0.85);
+    line-height: 1.5;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .comment-bubble-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 6px;
+  }
+  .comment-bubble-line {
+    font-size: 10px;
+    color: rgba(255,255,255,0.3);
+    font-family: ui-monospace, 'SF Mono', monospace;
+  }
+  .comment-bubble-btn {
+    font-size: 10px;
+    color: rgba(255,255,255,0.35);
+    background: none;
+    border: none;
+    cursor: pointer;
+    padding: 2px 4px;
+    border-radius: 3px;
+  }
+  .comment-bubble-btn:hover {
+    color: rgba(255,255,255,0.7);
+    background: rgba(255,255,255,0.08);
+  }
+  .comment-bubble-btn-delete:hover {
+    color: #ff4757;
+  }
+
+  .comment-reply-btn {
+    font-size: 11px;
+    color: rgba(59, 130, 246, 0.7);
+    background: none;
+    border: none;
+    cursor: pointer;
+    padding: 4px 8px;
+    margin: 4px 16px;
+    border-radius: 4px;
+  }
+  .comment-reply-btn:hover {
+    color: #bd93f9;
+    background: rgba(59, 130, 246, 0.1);
+  }
+
+  .annotation-container {
+    width: 100%;
+  }
+
+  /* ─── Comment Summary (sidebar bottom) ─── */
+  .comment-summary {
+    border-top: 1px solid rgba(255,255,255,0.08);
+    padding: 8px 0;
+    flex-shrink: 0;
+    max-height: 200px;
+    overflow-y: auto;
+  }
+  .comment-summary::-webkit-scrollbar { width: 5px; }
+  .comment-summary::-webkit-scrollbar-track { background: transparent; }
+  .comment-summary::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.12); border-radius: 3px; }
+  .comment-summary-header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 16px 6px;
+  }
+  .comment-summary-icon { font-size: 12px; }
+  .comment-summary-count {
+    font-size: 11px;
+    font-weight: 600;
+    color: rgba(255,255,255,0.5);
+  }
+  .comment-summary-list { padding: 0 8px; }
+  .comment-summary-file { margin-bottom: 4px; }
+  .comment-summary-file-name {
+    font-size: 10px;
+    font-weight: 600;
+    color: rgba(255,255,255,0.4);
+    padding: 2px 8px;
+    font-family: ui-monospace, 'SF Mono', monospace;
+  }
+  .comment-summary-item {
+    display: flex;
+    align-items: baseline;
+    gap: 6px;
+    padding: 2px 8px;
+  }
+  .comment-summary-line {
+    font-size: 10px;
+    color: rgba(59, 130, 246, 0.6);
+    font-family: ui-monospace, 'SF Mono', monospace;
+    flex-shrink: 0;
+  }
+  .comment-summary-text {
+    font-size: 11px;
+    color: rgba(255,255,255,0.5);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    flex: 1;
+    min-width: 0;
+  }
+  .stat-comments {
+    font-size: 10px;
+    color: rgba(59, 130, 246, 0.7);
+    font-weight: 500;
   }
 </style>
 </head>
@@ -269,12 +495,34 @@ function wireWindow(w: any) {
         readyResolve = null;
       }
     }
+
+    // Comment messages from the viewer
+    if (data?.type === "comment-added" && data.comment) {
+      const c = data.comment as CritComment;
+      activeComments.set(c.id, c);
+    }
+    if (data?.type === "comment-deleted" && data.commentId) {
+      activeComments.delete(data.commentId);
+    }
+    if (data?.type === "comment-edited" && data.commentId && data.text) {
+      const existing = activeComments.get(data.commentId);
+      if (existing) {
+        activeComments.set(data.commentId, { ...existing, text: data.text });
+      }
+    }
   });
 
   w.on("closed", () => {
     win = null;
     ready = false;
     readyResolve = null;
+
+    // Resolve the close promise so /crit can finish
+    if (closeResolve) {
+      closeResolve();
+      closeResolve = null;
+    }
+
     setTimeout(() => prewarm(), 100);
   });
 }
@@ -283,11 +531,10 @@ function wireWindow(w: any) {
 function prewarm() {
   if (!openFn || !existsSync(shellPath) || win) return;
 
-  // Pass null — we'll loadFile in the ready handler
   win = openFn(null, {
     width: 1120,
     height: 760,
-    title: "Diffs",
+    title: "Crit",
     hidden: true,
   });
   ready = false;
@@ -309,6 +556,56 @@ function waitForReady(timeoutMs = 15000): Promise<void> {
   });
 }
 
+/** Wait for the window to close. */
+function waitForClose(): Promise<void> {
+  if (!win) return Promise.resolve();
+  return new Promise((resolve) => {
+    closeResolve = resolve;
+  });
+}
+
+/** Write accumulated comments to ~/.pi/crit/<repoName>/<timestamp>.md */
+function writeCommentFile(repoName: string, branch: string): string | null {
+  if (activeComments.size === 0) return null;
+
+  const comments = Array.from(activeComments.values());
+
+  // Group by file
+  const grouped = new Map<string, CritComment[]>();
+  for (const c of comments) {
+    const arr = grouped.get(c.filePath) || [];
+    arr.push(c);
+    grouped.set(c.filePath, arr);
+  }
+
+  // Sort comments within each file by line number
+  for (const arr of grouped.values()) {
+    arr.sort((a, b) => a.lineNumber - b.lineNumber);
+  }
+
+  const now = new Date();
+  const timestamp = now.toISOString().replace(/[:.]/g, "-").slice(0, 19);
+
+  let md = `# Crit — ${repoName}\n\n`;
+  md += `Branch: ${branch || "unknown"}\n`;
+  md += `Date: ${now.toISOString()}\n\n`;
+
+  for (const [filePath, fileComments] of grouped) {
+    md += `## ${filePath}\n\n`;
+    for (const c of fileComments) {
+      const side = c.side === "additions" ? "new" : "old";
+      md += `### L${c.lineNumber} (${side})\n\n`;
+      md += `${c.text}\n\n`;
+    }
+  }
+
+  const dir = join(homedir(), ".pi", "crit", repoName);
+  mkdirSync(dir, { recursive: true });
+  const filePath = join(dir, `${timestamp}.md`);
+  writeFileSync(filePath, md);
+  return filePath;
+}
+
 export default function (pi: ExtensionAPI) {
   // Write shell.html, load glimpse, then prewarm
   (async () => {
@@ -323,12 +620,12 @@ export default function (pi: ExtensionAPI) {
     }
   })();
 
-  pi.registerCommand("diffs", {
-    description: "Show git diffs in a native window",
+  pi.registerCommand("crit", {
+    description: "Show git changes in a native window — add inline review comments, saved on close",
     handler: async (_args, ctx) => {
       if (!existsSync(viewerPath)) {
         ctx.ui.notify(
-          "Viewer not built. Run 'npm run build' in the pi-extension-diffs package directory.",
+          "Viewer not built. Run 'npm run build' in the pi-extension-crit package directory.",
           "error"
         );
         return;
@@ -450,12 +747,15 @@ export default function (pi: ExtensionAPI) {
       const data = { staged, unstaged, untracked, repoName, branch, commits };
       const dataJSON = JSON.stringify(data);
 
+      // Reset comments for this session
+      activeComments = new Map();
+
       // Open window if needed
       if (!win) {
         win = openFn(null, {
           width: 1120,
           height: 760,
-          title: `Diffs — ${repoName}`,
+          title: `Crit — ${repoName}`,
         });
         ready = false;
         wireWindow(win);
@@ -464,14 +764,35 @@ export default function (pi: ExtensionAPI) {
       try {
         await waitForReady();
       } catch (e: any) {
-        ctx.ui.notify(`Diffs viewer failed: ${e.message}`, "error");
+        ctx.ui.notify(`Crit viewer failed: ${e.message}`, "error");
         win = null;
         ready = false;
         return;
       }
 
-      win.send(`window.updateDiffs(${dataJSON})`);
-      win.show({ title: `Diffs — ${repoName}` });
+      win.send(`window.updateCrit(${dataJSON})`);
+      win.show({ title: `Crit — ${repoName}` });
+
+      // Block until the window is closed
+      await waitForClose();
+
+      // Write comments to file
+      const critFile = writeCommentFile(repoName, branch);
+      if (critFile) {
+        const count = activeComments.size;
+        ctx.ui.notify(`Wrote ${count} comment(s) to ${critFile}`, "info");
+
+        // Send the feedback as a follow-up message so the agent processes it
+        const contents = await pi.exec("cat", [critFile]);
+        if (contents.code === 0) {
+          pi.sendUserMessage(
+            `Review feedback from /crit (${count} comments, saved to ${critFile}):\n\n${contents.stdout}`,
+            { deliverAs: "followUp" }
+          );
+        }
+      } else {
+        ctx.ui.notify("No comments were left", "info");
+      }
     },
   });
 }
