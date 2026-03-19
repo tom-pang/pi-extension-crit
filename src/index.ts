@@ -470,6 +470,14 @@ function writeShellHTML() {
 </div>
 <div id="app"></div>
 <script>
+// Cmd+W closes the window
+document.addEventListener('keydown', function(e) {
+  if (e.metaKey && e.key === 'w') {
+    e.preventDefault();
+    window.glimpse.close();
+  }
+});
+
 // Small delay lets the spinner paint before the heavy JS parse starts.
 // Using setTimeout instead of rAF because rAF doesn't fire in hidden windows (prewarm).
 setTimeout(function() {
