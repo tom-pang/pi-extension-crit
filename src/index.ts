@@ -826,50 +826,34 @@ export default function (pi: ExtensionAPI) {
       activeComments = new Map();
 
       // Detect the frontmost terminal window geometry so Crit overlaps it
-      let winGeom: { x: number; y: number; width: number; height: number } | null = null;
+      // Captures position/size in AppleScript coords (top-left origin) for later repositioning
+      let termGeom: { x: number; y: number; width: number; height: number } | null = null;
       try {
         const geo = await pi.exec("osascript", ["-e", `
-tell application "Finder"
-  set db to bounds of window of desktop
-end tell
-set screenH to item 4 of db
 tell application "System Events"
   set fp to first application process whose frontmost is true
   set {wx, wy} to position of window 1 of fp
   set {ww, wh} to size of window 1 of fp
 end tell
-set appKitY to screenH - wy - wh
-return "" & wx & "," & appKitY & "," & ww & "," & wh`]);
+return "" & wx & "," & wy & "," & ww & "," & wh`]);
         if (geo.code === 0 && geo.stdout.trim()) {
           const [x, y, w, h] = geo.stdout.trim().split(",").map(Number);
           if ([x, y, w, h].every((n) => !isNaN(n))) {
-            winGeom = { x, y, width: w, height: h };
+            termGeom = { x, y, width: w, height: h };
           }
         }
       } catch {}
 
-      // Close the prewarmed window — we need a fresh one with the right geometry
-      if (win) {
-        const oldWin = win;
-        win = null;
+      // Open window if needed (reuse prewarmed)
+      if (!win) {
+        win = openFn(null, {
+          width: termGeom?.width ?? 1120,
+          height: termGeom?.height ?? 760,
+          title: `Crit — ${repoName}`,
+        });
         ready = false;
-        readyResolve = null;
-        closeResolve = null;
-        try { oldWin.close(); } catch {}
+        wireWindow(win);
       }
-
-      const openOpts: any = {
-        width: winGeom?.width ?? 1120,
-        height: winGeom?.height ?? 760,
-        title: `Crit — ${repoName}`,
-      };
-      if (winGeom) {
-        openOpts.x = winGeom.x;
-        openOpts.y = winGeom.y;
-      }
-      win = openFn(null, openOpts);
-      ready = false;
-      wireWindow(win);
 
       try {
         await waitForReady();
@@ -882,6 +866,19 @@ return "" & wx & "," & appKitY & "," & ww & "," & wh`]);
 
       win.send(`window.updateCrit(${dataJSON})`);
       win.show({ title: `Crit — ${repoName}` });
+
+      // Resize and reposition the window to overlap the terminal
+      if (termGeom) {
+        try {
+          await pi.exec("osascript", ["-e", `
+tell application "System Events"
+  tell process "Glimpse"
+    set position of window 1 to {${termGeom.x}, ${termGeom.y}}
+    set size of window 1 to {${termGeom.width}, ${termGeom.height}}
+  end tell
+end tell`]);
+        } catch {}
+      }
 
       // Block until the window is closed
       await waitForClose();
