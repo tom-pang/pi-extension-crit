@@ -55,6 +55,14 @@ Review all jj changes — working copy and recent commits since trunk.
 
 Review a single file. If the file has working copy changes in jj, shows the diff. If the file isn't in a jj repo or has no changes, shows the whole file for review.
 
+```
+/crit @
+/crit @-
+/crit trunk()..@
+```
+
+Review specific jj revisions. Accepts any jj revset — a single revision like `@-`, a change ID, or a range like `trunk()..@`. Shows the diff for each matched commit.
+
 The command blocks until you close the window. If you left comments, they're written to disk and delivered to the agent. If you didn't, it just says so and moves on.
 
 The comment file looks like:

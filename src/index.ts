@@ -621,9 +621,9 @@ export default function (pi: ExtensionAPI) {
   })();
 
   pi.registerCommand("crit", {
-    description: "Show jj changes in a native window — add inline review comments, saved on close. Pass a file path to review just that file.",
+    description: "Show jj changes in a native window — add inline review comments, saved on close. Pass a file path or jj revset.",
     handler: async (_args, ctx) => {
-      const targetFile = _args.trim() || null;
+      const arg = _args.trim() || null;
       if (!existsSync(viewerPath)) {
         ctx.ui.notify(
           "Viewer not built. Run 'npm run build' in the pi-extension-crit package directory.",
@@ -648,14 +648,30 @@ export default function (pi: ExtensionAPI) {
       const repoName = basename(ctx.cwd);
       let data: { staged: string; unstaged: string; untracked: { path: string; content: string }[]; repoName: string; branch: string; commits: any[] };
 
-      // ─── Single-file mode ───
-      if (targetFile) {
-        const absPath = resolve(ctx.cwd, targetFile);
-
-        if (!existsSync(absPath)) {
-          ctx.ui.notify(`File not found: ${targetFile}`, "error");
-          return;
+      // Decide mode: file path, jj revset, or default (working copy)
+      let mode: "file" | "revset" | "default" = "default";
+      if (arg) {
+        const absPath = resolve(ctx.cwd, arg);
+        if (existsSync(absPath)) {
+          mode = "file";
+        } else {
+          // Try as a jj revset
+          const revCheck = await pi.exec("jj", [
+            "log", "-r", arg, "--no-graph", "--limit", "1",
+            "-T", 'commit_id.short() ++ "\n"',
+          ]);
+          if (revCheck.code === 0 && revCheck.stdout.trim()) {
+            mode = "revset";
+          } else {
+            ctx.ui.notify(`Not a file or valid jj revset: ${arg}`, "error");
+            return;
+          }
         }
+      }
+
+      // ─── Single-file mode ───
+      if (mode === "file") {
+        const absPath = resolve(ctx.cwd, arg!);
 
         const jjCheck = await pi.exec("jj", ["root"]);
         const inJjRepo = jjCheck.code === 0;
@@ -672,7 +688,7 @@ export default function (pi: ExtensionAPI) {
           branch = branchResult.stdout.trim();
 
           const diffResult = await pi.exec("jj", [
-            "diff", "--git", "--", targetFile,
+            "diff", "--git", "--", arg!,
           ]);
           unstaged = diffResult.stdout || "";
         }
@@ -681,7 +697,7 @@ export default function (pi: ExtensionAPI) {
         if (!unstaged) {
           try {
             const content = readFileSync(absPath, "utf-8");
-            untracked.push({ path: targetFile, content });
+            untracked.push({ path: arg!, content });
           } catch (e: any) {
             ctx.ui.notify(`Cannot read file: ${e.message}`, "error");
             return;
@@ -689,6 +705,60 @@ export default function (pi: ExtensionAPI) {
         }
 
         data = { staged: "", unstaged, untracked, repoName, branch, commits: [] };
+
+      // ─── Revset mode ───
+      } else if (mode === "revset") {
+        const jjCheck = await pi.exec("jj", ["root"]);
+        if (jjCheck.code !== 0) {
+          ctx.ui.notify("Not in a jj repository", "error");
+          return;
+        }
+
+        const branchResult = await pi.exec("jj", [
+          "log", "-r", "@-", "--no-graph",
+          "-T", "bookmarks",
+        ]);
+        const branch = branchResult.stdout.trim();
+
+        // Enumerate all revisions matched by the revset
+        const commitLogResult = await pi.exec("jj", [
+          "log",
+          "-r", arg!,
+          "--no-graph",
+          "-T", 'commit_id.short() ++ "|" ++ description.first_line() ++ "|" ++ committer.timestamp().ago() ++ "\n"',
+        ]);
+
+        const commitLines = (commitLogResult.stdout || "")
+          .split("\n")
+          .filter((l) => l.trim());
+
+        const parsedCommits = commitLines
+          .map((line) => {
+            const parts = line.split("|");
+            const hash = parts[0] ?? "";
+            const time = parts[parts.length - 1] ?? "";
+            const message = parts.slice(1, parts.length - 1).join("|");
+            return { hash, message, time };
+          })
+          .filter((c) => c.hash);
+
+        if (parsedCommits.length === 0) {
+          ctx.ui.notify("No commits matched the revset", "info");
+          return;
+        }
+
+        const commitDiffs = await Promise.all(
+          parsedCommits.map((c) =>
+            pi.exec("jj", ["diff", "-r", c.hash, "--git"])
+          )
+        );
+
+        const commits = parsedCommits.map((c, i) => ({
+          ...c,
+          diff: commitDiffs[i].stdout || "",
+        }));
+
+        data = { staged: "", unstaged: "", untracked: [], repoName, branch, commits };
 
       // ─── Full repo mode ───
       } else {
