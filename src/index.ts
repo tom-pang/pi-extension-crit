@@ -556,11 +556,24 @@ function waitForReady(timeoutMs = 15000): Promise<void> {
   });
 }
 
-/** Wait for the window to close. */
-function waitForClose(): Promise<void> {
+/** Wait for the window to close (with a safety timeout). */
+function waitForClose(timeoutMs = 120000): Promise<void> {
   if (!win) return Promise.resolve();
   return new Promise((resolve) => {
-    closeResolve = resolve;
+    const timer = setTimeout(() => {
+      // Window is likely dead — clean up
+      closeResolve = null;
+      if (win) {
+        try { win.close(); } catch {}
+        win = null;
+      }
+      ready = false;
+      resolve();
+    }, timeoutMs);
+    closeResolve = () => {
+      clearTimeout(timer);
+      resolve();
+    };
   });
 }
 
@@ -845,6 +858,17 @@ return "" & wx & "," & wy & "," & ww & "," & wh`]);
       } catch {}
 
       // Open window if needed (reuse prewarmed)
+      // If a prewarmed window exists, verify it's still alive by poking it.
+      // Stale hidden windows can silently die, leaving win non-null but dead.
+      if (win && ready) {
+        try {
+          win.send("1");
+        } catch {
+          win = null;
+          ready = false;
+        }
+      }
+
       if (!win) {
         win = openFn(null, {
           width: termGeom?.width ?? 1120,
@@ -864,6 +888,10 @@ return "" & wx & "," & wy & "," & ww & "," & wh`]);
         return;
       }
 
+      // Show widget before opening the window so it's visible immediately
+      const reviewing = mode === "default" ? "working changes" : arg!;
+      ctx.ui.setWidget("crit", [`🔍 Crit window open — reviewing ${reviewing}`]);
+
       win.send(`window.updateCrit(${dataJSON})`);
       win.show({ title: `Crit — ${repoName}` });
 
@@ -879,10 +907,6 @@ tell application "System Events"
 end tell`]);
         } catch {}
       }
-
-      // Show widget while crit window is open
-      const reviewing = mode === "default" ? "working changes" : arg!;
-      ctx.ui.setWidget("crit", [`🔍 Crit window open — reviewing ${reviewing}`]);
 
       // Block until the window is closed
       await waitForClose();
