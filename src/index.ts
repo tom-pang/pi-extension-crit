@@ -568,24 +568,32 @@ function waitForReady(timeoutMs = 15000): Promise<void> {
   });
 }
 
-/** Wait for the window to close (with a safety timeout). */
-function waitForClose(timeoutMs = 120000): Promise<void> {
+/** Wait for the window to close, polling as a safety net. */
+function waitForClose(): Promise<void> {
   if (!win) return Promise.resolve();
   return new Promise((resolve) => {
-    const timer = setTimeout(() => {
-      // Window is likely dead — clean up
+    let resolved = false;
+    const cleanup = () => {
+      if (resolved) return;
+      resolved = true;
+      clearInterval(poll);
       closeResolve = null;
-      if (win) {
-        try { win.close(); } catch {}
-        win = null;
-      }
-      ready = false;
-      resolve();
-    }, timeoutMs);
-    closeResolve = () => {
-      clearTimeout(timer);
       resolve();
     };
+
+    // Poll every 2s — if win.send() throws, the window is gone
+    const poll = setInterval(() => {
+      if (!win) { cleanup(); return; }
+      try {
+        win.send("1");
+      } catch {
+        win = null;
+        ready = false;
+        cleanup();
+      }
+    }, 2000);
+
+    closeResolve = cleanup;
   });
 }
 
