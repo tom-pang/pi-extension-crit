@@ -53,6 +53,8 @@ function writeShellHTML() {
     height: 100%; display: none;
     --diffs-font-family: 'Comic Mono', monospace;
     --diffs-header-font-family: 'Comic Mono', monospace;
+    --diffs-font-size: 18px;
+    --diffs-line-height: 26px;
   }
 
   /* ─── Loading ─── */
