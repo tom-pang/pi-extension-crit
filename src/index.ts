@@ -880,8 +880,14 @@ end tell`]);
         } catch {}
       }
 
+      // Show widget while crit window is open
+      const reviewing = mode === "default" ? "working changes" : arg!;
+      ctx.ui.setWidget("crit", [`🔍 Crit window open — reviewing ${reviewing}`]);
+
       // Block until the window is closed
       await waitForClose();
+
+      ctx.ui.setWidget("crit", undefined);
 
       // Write comments to file
       const critFile = writeCommentFile(repoName, data.branch);
