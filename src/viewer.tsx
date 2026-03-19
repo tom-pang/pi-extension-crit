@@ -523,6 +523,7 @@ function DiffView({
   onEditComment,
   onStartComment,
   onCancelComment,
+  splitView,
 }: {
   file: FileEntry;
   comments: Comment[];
@@ -532,6 +533,7 @@ function DiffView({
   onEditComment: (id: string, text: string) => void;
   onStartComment: (lineNumber: number, side: "additions" | "deletions") => void;
   onCancelComment: () => void;
+  splitView: boolean;
 }) {
   // Build line annotations from existing comments + pending comment form
   const lineAnnotations: DiffLineAnnotation<string>[] = useMemo(() => {
@@ -627,9 +629,10 @@ function DiffView({
   const opts: FileDiffOptions<string> = useMemo(
     () => ({
       ...diffOptions,
+      diffStyle: splitView ? "split" as const : "unified" as const,
       enableGutterUtility: true,
     }),
-    []
+    [splitView]
   );
 
   if (file.section === "untracked") {
@@ -724,6 +727,21 @@ function App({ data }: { data: DiffData }) {
     lineNumber: number;
     side: "additions" | "deletions";
   } | null>(null);
+  const [splitView, setSplitView] = useState(false);
+
+  // Toggle split/unified with 's' key (when not typing in a textarea)
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      const tag = (e.target as HTMLElement)?.tagName;
+      if (tag === "TEXTAREA" || tag === "INPUT") return;
+      if (e.key === "s" && !e.metaKey && !e.ctrlKey && !e.altKey) {
+        e.preventDefault();
+        setSplitView((v) => !v);
+      }
+    };
+    document.addEventListener("keydown", handler);
+    return () => document.removeEventListener("keydown", handler);
+  }, []);
 
   // Validate selectedCommitId when data changes
   useEffect(() => {
@@ -967,6 +985,7 @@ function App({ data }: { data: DiffData }) {
                   onEditComment={handleEditComment}
                   onStartComment={handleStartComment}
                   onCancelComment={handleCancelComment}
+                  splitView={splitView}
                 />
               </div>
             );
