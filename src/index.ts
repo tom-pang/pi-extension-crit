@@ -825,16 +825,51 @@ export default function (pi: ExtensionAPI) {
       // Reset comments for this session
       activeComments = new Map();
 
-      // Open window if needed
-      if (!win) {
-        win = openFn(null, {
-          width: 1120,
-          height: 760,
-          title: `Crit — ${repoName}`,
-        });
+      // Detect the frontmost terminal window geometry so Crit overlaps it
+      let winGeom: { x: number; y: number; width: number; height: number } | null = null;
+      try {
+        const geo = await pi.exec("osascript", ["-e", `
+tell application "Finder"
+  set db to bounds of window of desktop
+end tell
+set screenH to item 4 of db
+tell application "System Events"
+  set fp to first application process whose frontmost is true
+  set {wx, wy} to position of window 1 of fp
+  set {ww, wh} to size of window 1 of fp
+end tell
+set appKitY to screenH - wy - wh
+return "" & wx & "," & appKitY & "," & ww & "," & wh`]);
+        if (geo.code === 0 && geo.stdout.trim()) {
+          const [x, y, w, h] = geo.stdout.trim().split(",").map(Number);
+          if ([x, y, w, h].every((n) => !isNaN(n))) {
+            winGeom = { x, y, width: w, height: h };
+          }
+        }
+      } catch {}
+
+      // Close the prewarmed window — we need a fresh one with the right geometry
+      if (win) {
+        const oldWin = win;
+        win = null;
         ready = false;
-        wireWindow(win);
+        readyResolve = null;
+        closeResolve = null;
+        try { oldWin.close(); } catch {}
       }
+
+      const openOpts: any = {
+        width: winGeom?.width ?? 1120,
+        height: winGeom?.height ?? 760,
+        title: `Crit — ${repoName}`,
+      };
+      if (winGeom) {
+        openOpts.x = winGeom.x;
+        openOpts.y = winGeom.y;
+      }
+      win = openFn(null, openOpts);
+      ready = false;
+      wireWindow(win);
 
       try {
         await waitForReady();
