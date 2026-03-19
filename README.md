@@ -2,7 +2,9 @@
 
 A [pi](https://github.com/badlogic/pi-mono/tree/main/packages/coding-agent) extension for inline code review feedback. Run `/crit`, review diffs in a native macOS window, leave comments on specific lines, close the window, and the agent gets your feedback automatically.
 
-Built on [Glimpse](https://github.com/HazAT/glimpse) (native WKWebView) and [@pierre/diffs](https://www.npmjs.com/package/@pierre/diffs) (Shiki-powered syntax highlighting). Dracula theme.
+Originally created by [Daniel Griesser (HazAT)](https://github.com/HazAT) as [pi-extension-diffs](https://github.com/HazAT/pi-extension-diffs). Daniel built the entire viewer, diff rendering, native window management, and extension architecture. This fork adds the `/crit` review workflow (inline comments, feedback delivery to the agent) on top of his work.
+
+Built on [Glimpse](https://github.com/HazAT/glimpse) (native WKWebView, also by Daniel) and [@pierre/diffs](https://www.npmjs.com/package/@pierre/diffs) (Shiki-powered syntax highlighting). Dracula theme.
 
 ## How it works
 
@@ -100,6 +102,10 @@ Point pi at your local clone:
 - The viewer bundle is ~10MB (Shiki grammars for syntax highlighting). A hidden window preloads it on startup so `/crit` opens fast, but it does eat some memory.
 - The `/crit` command blocks the agent while you review. This is intentional — the agent waits for your feedback before continuing.
 - Comments reference line numbers from the diff, not the final file. If lines shift between when you review and when the agent acts, the line numbers might be slightly off. The comment text gives enough context for the agent to figure it out.
+
+## Credits
+
+Built by [Daniel Griesser (HazAT)](https://github.com/HazAT). The diff viewer, native window management, Glimpse integration, and extension architecture are all his work from [pi-extension-diffs](https://github.com/HazAT/pi-extension-diffs). The `/crit` review workflow (inline commenting, comment persistence, agent feedback delivery, single-file review) was added by [Tom Pang](https://github.com/tom-pang).
 
 ## License
 
