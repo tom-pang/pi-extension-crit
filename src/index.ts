@@ -45,7 +45,7 @@ function writeShellHTML() {
   body {
     background: #282a36;
     color: #f8f8f2;
-    font-family: 'Comic Mono', monospace;
+    font-family: system-ui, -apple-system, sans-serif;
     -webkit-font-smoothing: antialiased;
   }
   #app { height: 100%; display: none; }
@@ -311,7 +311,7 @@ function writeShellHTML() {
     border: 1px solid rgba(255,255,255,0.1);
     border-radius: 6px;
     color: #f8f8f2;
-    font-family: 'Comic Mono', monospace;
+    font-family: system-ui, -apple-system, sans-serif;
     font-size: 13px;
     padding: 10px 12px;
     resize: vertical;
