@@ -965,7 +965,24 @@ return "" & wx & "," & wy & "," & ww & "," & wh`]);
 
       // Show widget before opening the window so it's visible immediately
       const reviewing = mode === "default" ? "working changes" : arg!;
-      ctx.ui.setWidget("crit", [`🔍 Crit window open — reviewing ${reviewing} (Escape to exit)`]);
+
+      // Compute diffstat from the data we already have
+      let totalAdd = 0;
+      let totalDel = 0;
+      const countPatch = (patch: string) => {
+        for (const line of patch.split("\n")) {
+          if (line.startsWith("+") && !line.startsWith("+++")) totalAdd++;
+          if (line.startsWith("-") && !line.startsWith("---")) totalDel++;
+        }
+      };
+      if (mode !== "file") {
+        if (data.staged) countPatch(data.staged);
+        if (data.unstaged) countPatch(data.unstaged);
+        for (const u of data.untracked) totalAdd += u.content.split("\n").length;
+        for (const c of data.commits) countPatch(c.diff);
+      }
+      const statPart = mode !== "file" ? ` +${totalAdd}/-${totalDel}` : "";
+      ctx.ui.setWidget("crit", [`🔍 reviewing ${reviewing}${statPart} (Escape to exit)`]);
 
       win.send(`window.updateCrit(${dataJSON})`);
       win.show({ title: `Crit — ${repoName}` });
