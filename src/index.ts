@@ -778,7 +778,7 @@ export default function (pi: ExtensionAPI) {
           branch = branchResult.stdout.trim();
 
           const diffResult = await pi.exec("jj", [
-            "diff", "--git", "--", arg!,
+            "diff", "--git", "--context=100", "--", arg!,
           ]);
           unstaged = diffResult.stdout || "";
         }
@@ -839,7 +839,7 @@ export default function (pi: ExtensionAPI) {
 
         const commitDiffs = await Promise.all(
           parsedCommits.map((c) =>
-            pi.exec("jj", ["diff", "-r", c.hash, "--git"])
+            pi.exec("jj", ["diff", "-r", c.hash, "--git", "--context=100"])
           )
         );
 
@@ -859,7 +859,7 @@ export default function (pi: ExtensionAPI) {
         }
 
         const [diffResult, branchResult] = await Promise.all([
-          pi.exec("jj", ["diff", "--git"]),
+          pi.exec("jj", ["diff", "--git", "--context=100"]),
           pi.exec("jj", [
             "log", "-r", "@-", "--no-graph",
             "-T", "bookmarks",
@@ -894,7 +894,7 @@ export default function (pi: ExtensionAPI) {
 
         const commitDiffs = await Promise.all(
           parsedCommits.map((c) =>
-            pi.exec("jj", ["diff", "-r", c.hash, "--git"])
+            pi.exec("jj", ["diff", "-r", c.hash, "--git", "--context=100"])
           )
         );
 

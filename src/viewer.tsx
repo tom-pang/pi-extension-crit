@@ -65,6 +65,8 @@ const diffOptions: FileDiffOptions<string> = {
   overflow: "scroll",
   themeType: "dark",
   enableGutterUtility: true,
+  hunkSeparators: "line-info",
+  expansionLineCount: 50,
 };
 
 /** Split a combined git diff into individual per-file patches. */
