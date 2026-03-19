@@ -45,10 +45,14 @@ function writeShellHTML() {
   body {
     background: #282a36;
     color: #f8f8f2;
-    font-family: system-ui, -apple-system, sans-serif;
+    font-family: 'Comic Mono', monospace;
     -webkit-font-smoothing: antialiased;
   }
-  #app { height: 100%; display: none; }
+  #app {
+    height: 100%; display: none;
+    --diffs-font-family: 'Comic Mono', monospace;
+    --diffs-header-font-family: 'Comic Mono', monospace;
+  }
 
   /* ─── Loading ─── */
   .loading {
@@ -311,7 +315,7 @@ function writeShellHTML() {
     border: 1px solid rgba(255,255,255,0.1);
     border-radius: 6px;
     color: #f8f8f2;
-    font-family: system-ui, -apple-system, sans-serif;
+    font-family: 'Comic Mono', monospace;
     font-size: 13px;
     padding: 10px 12px;
     resize: vertical;
