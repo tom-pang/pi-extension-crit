@@ -207,6 +207,22 @@ function writeShellHTML() {
   /* ─── Main panel ─── */
   .main { flex: 1; display: flex; flex-direction: column; overflow: hidden; min-width: 0; }
 
+  .commit-banner {
+    display: flex; align-items: center; gap: 10px;
+    padding: 8px 14px; background: #2a2b3d;
+    border-bottom: 1px solid rgba(255,255,255,0.08);
+    font-size: 12px; flex-shrink: 0;
+  }
+  .commit-banner-hash {
+    font-family: monospace; color: #bd93f9; font-size: 11px;
+    background: rgba(189,147,249,0.12); padding: 2px 6px; border-radius: 3px;
+  }
+  .commit-banner-message {
+    color: rgba(255,255,255,0.85); flex: 1; overflow: hidden;
+    text-overflow: ellipsis; white-space: nowrap;
+  }
+  .commit-banner-time { color: rgba(255,255,255,0.3); font-size: 11px; flex-shrink: 0; }
+
   .tab-bar {
     display: flex; background: #21222c;
     border-bottom: 1px solid rgba(255,255,255,0.08);

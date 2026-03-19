@@ -923,6 +923,17 @@ function App({ data }: { data: DiffData }) {
 
       {/* Main panel */}
       <div className="main">
+        {selectedCommitId !== "working" && (() => {
+          const commit = data.commits.find((c) => c.hash === selectedCommitId);
+          if (!commit) return null;
+          return (
+            <div className="commit-banner">
+              <span className="commit-banner-hash">{commit.hash.slice(0, 7)}</span>
+              <span className="commit-banner-message">{commit.message}</span>
+              <span className="commit-banner-time">{commit.time}</span>
+            </div>
+          );
+        })()}
         <TabBar
           tabs={openTabs}
           activeId={activeId}
