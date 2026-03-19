@@ -16,6 +16,7 @@ let win: any = null;
 let openFn: any = null;
 let ready = false;
 let readyResolve: (() => void) | null = null;
+let lastHeartbeat = 0;
 
 // Comment accumulation for the active /crit session
 interface CritComment {
@@ -498,6 +499,11 @@ document.addEventListener('keydown', function(e) {
   }
 });
 
+// Heartbeat so Node side can detect when the window dies
+setInterval(function() {
+  try { window.webkit.messageHandlers.glimpse.postMessage(JSON.stringify({type: "heartbeat"})); } catch {}
+}, 1000);
+
 // Small delay lets the spinner paint before the heavy JS parse starts.
 // Using setTimeout instead of rAF because rAF doesn't fire in hidden windows (prewarm).
 setTimeout(function() {
@@ -518,10 +524,15 @@ function wireWindow(w: any) {
   w.on("message", (data: any) => {
     if (data?.type === "viewer-ready") {
       ready = true;
+      lastHeartbeat = Date.now();
       if (readyResolve) {
         readyResolve();
         readyResolve = null;
       }
+    }
+
+    if (data?.type === "heartbeat") {
+      lastHeartbeat = Date.now();
     }
 
     if (data?.type === "close-requested") {
@@ -596,30 +607,46 @@ function waitForReady(timeoutMs = 15000): Promise<void> {
   });
 }
 
-/** Wait for the window to close, polling as a safety net. */
-function waitForClose(): Promise<void> {
+/** Wait for the window to close, polling heartbeat as a safety net.
+ *  Also intercepts Escape in pi terminal as an exit mechanism. */
+function waitForClose(ctx?: { ui: { onTerminalInput: (handler: (data: string) => { consume?: boolean } | undefined) => () => void } }): Promise<void> {
   if (!win) return Promise.resolve();
+  lastHeartbeat = Date.now();
   return new Promise((resolve) => {
     let resolved = false;
     const cleanup = () => {
       if (resolved) return;
       resolved = true;
       clearInterval(poll);
+      unsubInput?.();
       closeResolve = null;
+      if (win) {
+        try { win.close(); } catch {}
+        win = null;
+      }
+      ready = false;
       resolve();
     };
 
-    // Poll every 2s — if win.send() throws, the window is gone
+    // Poll every 1s — if no heartbeat for 3s, the window is gone
     const poll = setInterval(() => {
       if (!win) { cleanup(); return; }
-      try {
-        win.send("1");
-      } catch {
-        win = null;
-        ready = false;
+      if (Date.now() - lastHeartbeat > 3000) {
         cleanup();
       }
-    }, 2000);
+    }, 1000);
+
+    // Intercept Escape in the pi terminal to exit crit
+    let unsubInput: (() => void) | undefined;
+    if (ctx?.ui?.onTerminalInput) {
+      unsubInput = ctx.ui.onTerminalInput((data: string) => {
+        if (data === "\x1b") {
+          cleanup();
+          return { consume: true };
+        }
+        return undefined;
+      });
+    }
 
     closeResolve = cleanup;
   });
@@ -938,7 +965,7 @@ return "" & wx & "," & wy & "," & ww & "," & wh`]);
 
       // Show widget before opening the window so it's visible immediately
       const reviewing = mode === "default" ? "working changes" : arg!;
-      ctx.ui.setWidget("crit", [`🔍 Crit window open — reviewing ${reviewing}`]);
+      ctx.ui.setWidget("crit", [`🔍 Crit window open — reviewing ${reviewing} (Escape to exit)`]);
 
       win.send(`window.updateCrit(${dataJSON})`);
       win.show({ title: `Crit — ${repoName}` });
@@ -957,7 +984,7 @@ end tell`]);
       }
 
       // Block until the window is closed
-      await waitForClose();
+      await waitForClose(ctx);
 
       ctx.ui.setWidget("crit", undefined);
 
