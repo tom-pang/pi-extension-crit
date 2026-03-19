@@ -981,8 +981,18 @@ return "" & wx & "," & wy & "," & ww & "," & wh`]);
         for (const u of data.untracked) totalAdd += u.content.split("\n").length;
         for (const c of data.commits) countPatch(c.diff);
       }
-      const statPart = mode !== "file" ? ` +${totalAdd}/-${totalDel}` : "";
-      ctx.ui.setWidget("crit", [`🔍 reviewing ${reviewing}${statPart} (Escape to exit)`]);
+      if (mode !== "file") {
+        ctx.ui.setWidget("crit", (_tui: any, theme: any) => ({
+          invalidate() {},
+          render() {
+            const added = theme.fg("success", `+${totalAdd}`);
+            const removed = theme.fg("error", `-${totalDel}`);
+            return [`🔍 reviewing ${reviewing} ${added}/${removed} (Escape to exit)`];
+          },
+        }));
+      } else {
+        ctx.ui.setWidget("crit", [`🔍 reviewing ${reviewing} (Escape to exit)`]);
+      }
 
       win.send(`window.updateCrit(${dataJSON})`);
       win.show({ title: `Crit — ${repoName}` });
