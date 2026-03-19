@@ -470,11 +470,11 @@ function writeShellHTML() {
 </div>
 <div id="app"></div>
 <script>
-// Cmd+W closes the window
+// Cmd+W closes the window (send message to Node side so closed event fires)
 document.addEventListener('keydown', function(e) {
   if (e.metaKey && e.key === 'w') {
     e.preventDefault();
-    window.glimpse.close();
+    try { window.webkit.messageHandlers.glimpse.postMessage(JSON.stringify({type: "close-requested"})); } catch {}
   }
 });
 
@@ -502,6 +502,10 @@ function wireWindow(w: any) {
         readyResolve();
         readyResolve = null;
       }
+    }
+
+    if (data?.type === "close-requested") {
+      try { w.close(); } catch {}
     }
 
     // Comment messages from the viewer
