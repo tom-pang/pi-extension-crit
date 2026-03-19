@@ -9,7 +9,7 @@ Built on [Glimpse](https://github.com/HazAT/glimpse) (native WKWebView, also by 
 ## How it works
 
 1. You (or the agent) run `/crit`
-2. A native window opens showing your git diffs — staged, unstaged, untracked, and recent branch commits
+2. A native window opens showing your jj diffs — working copy changes and recent commits since trunk
 3. Hover over any line in a diff and click the `+` button to leave a comment
 4. Close the window when you're done
 5. Comments get written to `~/.pi/crit/<repo>/<timestamp>.md` and sent to the agent as a follow-up message
@@ -38,7 +38,7 @@ Then `/reload`.
 ## Requirements
 
 - **macOS** — native WKWebView window via Glimpse
-- **git** — must be in a git repo (except when reviewing a single file with `/crit <path>`)
+- **jj** — must be in a jj repository (except when reviewing a single file with `/crit <path>`)
 - **bun** — builds the viewer bundle
 
 ## Usage
@@ -47,13 +47,13 @@ Then `/reload`.
 /crit
 ```
 
-Review all git changes — staged, unstaged, untracked, and recent branch commits.
+Review all jj changes — working copy and recent commits since trunk.
 
 ```
 /crit src/foo.ts
 ```
 
-Review a single file. If the file has staged or unstaged git changes, shows those diffs. If the file isn't in git or has no changes, shows the whole file for review.
+Review a single file. If the file has working copy changes in jj, shows the diff. If the file isn't in a jj repo or has no changes, shows the whole file for review.
 
 The command blocks until you close the window. If you left comments, they're written to disk and delivered to the agent. If you didn't, it just says so and moves on.
 

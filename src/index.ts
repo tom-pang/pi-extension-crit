@@ -621,7 +621,7 @@ export default function (pi: ExtensionAPI) {
   })();
 
   pi.registerCommand("crit", {
-    description: "Show git changes in a native window — add inline review comments, saved on close. Pass a file path to review just that file.",
+    description: "Show jj changes in a native window — add inline review comments, saved on close. Pass a file path to review just that file.",
     handler: async (_args, ctx) => {
       const targetFile = _args.trim() || null;
       if (!existsSync(viewerPath)) {
@@ -657,28 +657,28 @@ export default function (pi: ExtensionAPI) {
           return;
         }
 
-        const gitCheck = await pi.exec("git", ["rev-parse", "--is-inside-work-tree"]);
-        const inGitRepo = gitCheck.code === 0;
+        const jjCheck = await pi.exec("jj", ["root"]);
+        const inJjRepo = jjCheck.code === 0;
 
-        let staged = "";
         let unstaged = "";
         const untracked: { path: string; content: string }[] = [];
         let branch = "";
 
-        if (inGitRepo) {
-          const branchResult = await pi.exec("git", ["branch", "--show-current"]);
+        if (inJjRepo) {
+          const branchResult = await pi.exec("jj", [
+            "log", "-r", "@-", "--no-graph",
+            "-T", "bookmarks",
+          ]);
           branch = branchResult.stdout.trim();
 
-          const [stagedResult, unstagedResult] = await Promise.all([
-            pi.exec("git", ["diff", "--cached", "--", targetFile]),
-            pi.exec("git", ["diff", "--", targetFile]),
+          const diffResult = await pi.exec("jj", [
+            "diff", "--git", "--", targetFile,
           ]);
-          staged = stagedResult.stdout || "";
-          unstaged = unstagedResult.stdout || "";
+          unstaged = diffResult.stdout || "";
         }
 
-        // No git diff — show the whole file for review
-        if (!staged && !unstaged) {
+        // No jj diff — show the whole file for review
+        if (!unstaged) {
           try {
             const content = readFileSync(absPath, "utf-8");
             untracked.push({ path: targetFile, content });
@@ -688,68 +688,35 @@ export default function (pi: ExtensionAPI) {
           }
         }
 
-        data = { staged, unstaged, untracked, repoName, branch, commits: [] };
+        data = { staged: "", unstaged, untracked, repoName, branch, commits: [] };
 
       // ─── Full repo mode ───
       } else {
-        const gitCheck = await pi.exec("git", [
-          "rev-parse",
-          "--is-inside-work-tree",
-        ]);
-        if (gitCheck.code !== 0) {
-          ctx.ui.notify("Not in a git repository", "error");
+        const jjCheck = await pi.exec("jj", ["root"]);
+        if (jjCheck.code !== 0) {
+          ctx.ui.notify("Not in a jj repository", "error");
           return;
         }
 
-        const [stagedResult, unstagedResult, untrackedResult, branchResult] =
-          await Promise.all([
-            pi.exec("git", ["diff", "--cached"]),
-            pi.exec("git", ["diff"]),
-            pi.exec("git", ["ls-files", "--others", "--exclude-standard"]),
-            pi.exec("git", ["branch", "--show-current"]),
-          ]);
+        const [diffResult, branchResult] = await Promise.all([
+          pi.exec("jj", ["diff", "--git"]),
+          pi.exec("jj", [
+            "log", "-r", "@-", "--no-graph",
+            "-T", "bookmarks",
+          ]),
+        ]);
 
-        const staged = stagedResult.stdout || "";
-        const unstaged = unstagedResult.stdout || "";
-        const untrackedPaths = untrackedResult.stdout
-          .split("\n")
-          .filter((p) => p.trim());
+        const unstaged = diffResult.stdout || "";
         const branch = branchResult.stdout.trim();
 
-        // Gather commits (up to 5)
-        const isMain = branch === "main" || branch === "master";
-        let commitLogResult;
-        if (isMain) {
-          commitLogResult = await pi.exec("git", [
-            "log",
-            "HEAD",
-            "--max-count=5",
-            '--format=%h|%s|%ar',
-          ]);
-        } else {
-          commitLogResult = await pi.exec("git", [
-            "log",
-            "main..HEAD",
-            "--max-count=5",
-            '--format=%h|%s|%ar',
-          ]);
-          if (commitLogResult.code !== 0) {
-            commitLogResult = await pi.exec("git", [
-              "log",
-              "master..HEAD",
-              "--max-count=5",
-              '--format=%h|%s|%ar',
-            ]);
-          }
-          if (commitLogResult.code !== 0) {
-            commitLogResult = await pi.exec("git", [
-              "log",
-              "HEAD",
-              "--max-count=5",
-              '--format=%h|%s|%ar',
-            ]);
-          }
-        }
+        // Gather commits since trunk (up to 5)
+        const commitLogResult = await pi.exec("jj", [
+          "log",
+          "-r", "trunk()..@-",
+          "--limit", "5",
+          "--no-graph",
+          "-T", 'commit_id.short() ++ "|" ++ description.first_line() ++ "|" ++ committer.timestamp().ago() ++ "\n"',
+        ]);
 
         const commitLines = (commitLogResult.stdout || "")
           .split("\n")
@@ -767,7 +734,7 @@ export default function (pi: ExtensionAPI) {
 
         const commitDiffs = await Promise.all(
           parsedCommits.map((c) =>
-            pi.exec("git", ["show", c.hash, "--format=", "--patch"])
+            pi.exec("jj", ["diff", "-r", c.hash, "--git"])
           )
         );
 
@@ -776,22 +743,12 @@ export default function (pi: ExtensionAPI) {
           diff: commitDiffs[i].stdout || "",
         }));
 
-        if (!staged && !unstaged && untrackedPaths.length === 0 && commits.length === 0) {
+        if (!unstaged && commits.length === 0) {
           ctx.ui.notify("No changes", "info");
           return;
         }
 
-        const untracked: { path: string; content: string }[] = [];
-        for (const filePath of untrackedPaths) {
-          try {
-            const result = await pi.exec("cat", [filePath]);
-            if (result.code === 0) {
-              untracked.push({ path: filePath, content: result.stdout });
-            }
-          } catch {}
-        }
-
-        data = { staged, unstaged, untracked, repoName, branch, commits };
+        data = { staged: "", unstaged, untracked: [], repoName, branch, commits };
       }
       const dataJSON = JSON.stringify(data);
 
