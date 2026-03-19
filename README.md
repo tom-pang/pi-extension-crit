@@ -36,7 +36,7 @@ Then `/reload`.
 ## Requirements
 
 - **macOS** — native WKWebView window via Glimpse
-- **git** — must be in a git repo
+- **git** — must be in a git repo (except when reviewing a single file with `/crit <path>`)
 - **bun** — builds the viewer bundle
 
 ## Usage
@@ -44,6 +44,14 @@ Then `/reload`.
 ```
 /crit
 ```
+
+Review all git changes — staged, unstaged, untracked, and recent branch commits.
+
+```
+/crit src/foo.ts
+```
+
+Review a single file. If the file has staged or unstaged git changes, shows those diffs. If the file isn't in git or has no changes, shows the whole file for review.
 
 The command blocks until you close the window. If you left comments, they're written to disk and delivered to the agent. If you didn't, it just says so and moves on.
 
