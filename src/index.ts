@@ -525,7 +525,15 @@ function wireWindow(w: any) {
     }
 
     if (data?.type === "close-requested") {
+      // Directly clean up and resolve — don't rely on closed event
+      win = null;
+      ready = false;
+      if (closeResolve) {
+        closeResolve();
+        closeResolve = null;
+      }
       try { w.close(); } catch {}
+      setTimeout(() => prewarm(), 100);
     }
 
     // Comment messages from the viewer
