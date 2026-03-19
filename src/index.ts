@@ -45,7 +45,7 @@ function writeShellHTML() {
   body {
     background: #282a36;
     color: #f8f8f2;
-    font-family: system-ui, -apple-system, sans-serif;
+    font-family: 'Comic Mono', monospace;
     -webkit-font-smoothing: antialiased;
   }
   #app { height: 100%; display: none; }
@@ -175,7 +175,7 @@ function writeShellHTML() {
     gap: 8px;
   }
   .commit-hash {
-    font-family: ui-monospace, 'SF Mono', monospace;
+    font-family: 'Comic Mono', monospace;
     font-size: 11px;
     color: rgba(255,255,255,0.35);
     flex-shrink: 0;
@@ -201,7 +201,7 @@ function writeShellHTML() {
     background: rgba(255,255,255,0.06);
     padding: 1px 7px;
     border-radius: 8px;
-    font-family: ui-monospace, 'SF Mono', monospace;
+    font-family: 'Comic Mono', monospace;
   }
 
   /* ─── Main panel ─── */
@@ -214,7 +214,7 @@ function writeShellHTML() {
     font-size: 12px; flex-shrink: 0;
   }
   .commit-banner-hash {
-    font-family: monospace; color: #bd93f9; font-size: 11px;
+    font-family: 'Comic Mono', monospace; color: #bd93f9; font-size: 11px;
     background: rgba(189,147,249,0.12); padding: 2px 6px; border-radius: 3px;
   }
   .commit-banner-message {
@@ -311,7 +311,7 @@ function writeShellHTML() {
     border: 1px solid rgba(255,255,255,0.1);
     border-radius: 6px;
     color: #f8f8f2;
-    font-family: system-ui, -apple-system, sans-serif;
+    font-family: 'Comic Mono', monospace;
     font-size: 13px;
     padding: 10px 12px;
     resize: vertical;
@@ -381,7 +381,7 @@ function writeShellHTML() {
   .comment-bubble-line {
     font-size: 10px;
     color: rgba(255,255,255,0.3);
-    font-family: ui-monospace, 'SF Mono', monospace;
+    font-family: 'Comic Mono', monospace;
   }
   .comment-bubble-btn {
     font-size: 10px;
@@ -449,7 +449,7 @@ function writeShellHTML() {
     font-weight: 600;
     color: rgba(255,255,255,0.4);
     padding: 2px 8px;
-    font-family: ui-monospace, 'SF Mono', monospace;
+    font-family: 'Comic Mono', monospace;
   }
   .comment-summary-item {
     display: flex;
@@ -460,7 +460,7 @@ function writeShellHTML() {
   .comment-summary-line {
     font-size: 10px;
     color: rgba(59, 130, 246, 0.6);
-    font-family: ui-monospace, 'SF Mono', monospace;
+    font-family: 'Comic Mono', monospace;
     flex-shrink: 0;
   }
   .comment-summary-text {
