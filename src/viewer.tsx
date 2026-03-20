@@ -516,7 +516,7 @@ function TabBar({
 
 // ─── Diff Content with Comments ───
 
-function DiffView({
+const DiffView = React.memo(function DiffView({
   file,
   comments,
   pendingComment,
@@ -663,7 +663,7 @@ function DiffView({
       />
     </div>
   );
-}
+});
 
 // ─── Comment Summary Panel ───
 
@@ -713,6 +713,69 @@ function CommentSummary({
     </div>
   );
 }
+
+// ─── Tab Panel (memoized to prevent scroll reset) ───
+
+const MemoizedTabPanel = React.memo(function MemoizedTabPanel({
+  id,
+  filesMap,
+  comments,
+  pendingComment,
+  activeId,
+  splitView,
+  onAddComment,
+  onDeleteComment,
+  onEditComment,
+  onStartComment,
+  onCancelComment,
+}: {
+  id: string;
+  filesMap: Map<string, FileEntry>;
+  comments: Comment[];
+  pendingComment: { fileId: string; lineNumber: number; side: "additions" | "deletions" } | null;
+  activeId: string | null;
+  splitView: boolean;
+  onAddComment: (lineNumber: number, side: "additions" | "deletions", text: string) => void;
+  onDeleteComment: (id: string) => void;
+  onEditComment: (id: string, text: string) => void;
+  onStartComment: (lineNumber: number, side: "additions" | "deletions") => void;
+  onCancelComment: () => void;
+}) {
+  const file = filesMap.get(id);
+  if (!file) return null;
+
+  const fileComments = useMemo(
+    () => comments.filter((c) => c.filePath === file.path),
+    [comments, file.path]
+  );
+
+  const pending = useMemo(
+    () =>
+      pendingComment && pendingComment.fileId === id
+        ? { lineNumber: pendingComment.lineNumber, side: pendingComment.side }
+        : null,
+    [pendingComment, id]
+  );
+
+  return (
+    <div
+      className="tab-panel"
+      style={{ display: id === activeId ? "block" : "none" }}
+    >
+      <DiffView
+        file={file}
+        comments={fileComments}
+        pendingComment={pending}
+        onAddComment={onAddComment}
+        onDeleteComment={onDeleteComment}
+        onEditComment={onEditComment}
+        onStartComment={onStartComment}
+        onCancelComment={onCancelComment}
+        splitView={splitView}
+      />
+    </div>
+  );
+});
 
 // ─── Main App ───
 
@@ -963,35 +1026,22 @@ function App({ data }: { data: DiffData }) {
           onClose={handleTabClose}
         />
         <div className="main-content">
-          {openTabs.map((id) => {
-            const file = filesMap.get(id);
-            if (!file) return null;
-            const fileComments = comments.filter((c) => c.filePath === file.path);
-            const pending =
-              pendingComment && pendingComment.fileId === id
-                ? { lineNumber: pendingComment.lineNumber, side: pendingComment.side }
-                : null;
-
-            return (
-              <div
-                key={id}
-                className="tab-panel"
-                style={{ display: id === activeId ? "block" : "none" }}
-              >
-                <DiffView
-                  file={file}
-                  comments={fileComments}
-                  pendingComment={pending}
-                  onAddComment={handleAddComment}
-                  onDeleteComment={handleDeleteComment}
-                  onEditComment={handleEditComment}
-                  onStartComment={handleStartComment}
-                  onCancelComment={handleCancelComment}
-                  splitView={splitView}
-                />
-              </div>
-            );
-          })}
+          {openTabs.map((id) => (
+            <MemoizedTabPanel
+              key={id}
+              id={id}
+              filesMap={filesMap}
+              comments={comments}
+              pendingComment={pendingComment}
+              activeId={activeId}
+              splitView={splitView}
+              onAddComment={handleAddComment}
+              onDeleteComment={handleDeleteComment}
+              onEditComment={handleEditComment}
+              onStartComment={handleStartComment}
+              onCancelComment={handleCancelComment}
+            />
+          ))}
           {openTabs.length === 0 && (
             <div className="empty-state">Select a file from the sidebar</div>
           )}
