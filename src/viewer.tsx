@@ -776,8 +776,39 @@ const MemoizedTabPanel = React.memo(function MemoizedTabPanel({
     [pendingComment, id]
   );
 
+  // WebKit lacks overflow-anchor. When @pierre/diffs mutates DOM (progressive
+  // rendering, hunk collapse, etc.), WebKit resets scrollTop. Use MutationObserver
+  // to detect DOM changes and restore scroll synchronously before paint.
+  const panelRef = useRef<HTMLDivElement>(null);
+  const scrollRef = useRef(0);
+  const userScrolling = useRef(true);
+
+  useEffect(() => {
+    const el = panelRef.current;
+    if (!el) return;
+
+    // Track user scroll
+    const onScroll = () => { scrollRef.current = el.scrollTop; userScrolling.current = true; };
+    el.addEventListener("scroll", onScroll, { passive: true });
+
+    // When DOM mutates inside the panel, restore scroll if it was reset
+    const observer = new MutationObserver(() => {
+      if (el.scrollTop !== scrollRef.current && !userScrolling.current) {
+        el.scrollTop = scrollRef.current;
+      }
+      userScrolling.current = false;
+    });
+    observer.observe(el, { childList: true, subtree: true, characterData: true });
+
+    return () => {
+      el.removeEventListener("scroll", onScroll);
+      observer.disconnect();
+    };
+  }, []);
+
   return (
     <div
+      ref={panelRef}
       className="tab-panel"
       style={{ display: id === activeId ? "block" : "none" }}
     >
