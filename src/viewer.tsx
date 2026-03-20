@@ -537,6 +537,22 @@ const DiffView = React.memo(function DiffView({
   onCancelComment: () => void;
   splitView: boolean;
 }) {
+  // Use refs so callbacks have stable references but always read current state.
+  // This prevents @pierre/diffs from doing full re-renders when comments change.
+  const commentsRef = useRef(comments);
+  commentsRef.current = comments;
+  const pendingRef = useRef(pendingComment);
+  pendingRef.current = pendingComment;
+  const onAddRef = useRef(onAddComment);
+  onAddRef.current = onAddComment;
+  const onDeleteRef = useRef(onDeleteComment);
+  onDeleteRef.current = onDeleteComment;
+  const onEditRef = useRef(onEditComment);
+  onEditRef.current = onEditComment;
+  const onStartRef = useRef(onStartComment);
+  onStartRef.current = onStartComment;
+  const onCancelRef = useRef(onCancelComment);
+  onCancelRef.current = onCancelComment;
 
   // Build line annotations from existing comments + pending comment form
   const lineAnnotations: DiffLineAnnotation<string>[] = useMemo(() => {
@@ -563,7 +579,6 @@ const DiffView = React.memo(function DiffView({
     // Add pending comment annotation
     if (pendingComment) {
       const existingKey = `${pendingComment.side}:${pendingComment.lineNumber}`;
-      // Only add a separate annotation if there's no existing comments annotation at this line
       if (!grouped.has(existingKey)) {
         annos.push({
           side: pendingComment.side,
@@ -576,17 +591,19 @@ const DiffView = React.memo(function DiffView({
     return annos;
   }, [comments, pendingComment]);
 
+  // Stable callback — reads current state from refs, never changes reference
   const renderAnnotation = useCallback(
     (annotation: DiffLineAnnotation<string>) => {
-      const meta = annotation.metadata || "";
-      const lineComments = comments.filter(
+      const currentComments = commentsRef.current;
+      const currentPending = pendingRef.current;
+      const lineComments = currentComments.filter(
         (c) =>
           c.lineNumber === annotation.lineNumber && c.side === annotation.side
       );
       const isPendingLine =
-        pendingComment &&
-        pendingComment.lineNumber === annotation.lineNumber &&
-        pendingComment.side === annotation.side;
+        currentPending &&
+        currentPending.lineNumber === annotation.lineNumber &&
+        currentPending.side === annotation.side;
 
       return (
         <div className="annotation-container">
@@ -594,23 +611,23 @@ const DiffView = React.memo(function DiffView({
             <CommentBubble
               key={c.id}
               comment={c}
-              onDelete={onDeleteComment}
-              onEdit={onEditComment}
+              onDelete={(id) => onDeleteRef.current(id)}
+              onEdit={(id, text) => onEditRef.current(id, text)}
             />
           ))}
           {isPendingLine && (
             <InlineCommentForm
               onSubmit={(text) =>
-                onAddComment(annotation.lineNumber, annotation.side, text)
+                onAddRef.current(annotation.lineNumber, annotation.side, text)
               }
-              onCancel={onCancelComment}
+              onCancel={() => onCancelRef.current()}
             />
           )}
           {!isPendingLine && lineComments.length > 0 && (
             <button
               className="comment-reply-btn"
               onClick={() =>
-                onStartComment(annotation.lineNumber, annotation.side)
+                onStartRef.current(annotation.lineNumber, annotation.side)
               }
             >
               Reply
@@ -619,14 +636,15 @@ const DiffView = React.memo(function DiffView({
         </div>
       );
     },
-    [comments, pendingComment, onAddComment, onDeleteComment, onEditComment, onStartComment, onCancelComment]
+    [] // stable — never changes reference
   );
 
+  // Stable callback
   const renderGutterUtility = useCallback(
     (getHoveredLine: () => { lineNumber: number; side: "additions" | "deletions" } | undefined) => (
-      <GutterPlusButton getHoveredLine={getHoveredLine} onClickAdd={onStartComment} />
+      <GutterPlusButton getHoveredLine={getHoveredLine} onClickAdd={(ln, side) => onStartRef.current(ln, side)} />
     ),
-    [onStartComment]
+    [] // stable
   );
 
   const opts: FileDiffOptions<string> = useMemo(
@@ -758,29 +776,8 @@ const MemoizedTabPanel = React.memo(function MemoizedTabPanel({
     [pendingComment, id]
   );
 
-  // Preserve scroll position across re-renders (comment add/edit/delete)
-  const panelRef = useRef<HTMLDivElement>(null);
-  const scrollRef = useRef(0);
-
-  useEffect(() => {
-    const el = panelRef.current;
-    if (!el) return;
-    const handler = () => { scrollRef.current = el.scrollTop; };
-    el.addEventListener("scroll", handler, { passive: true });
-    return () => el.removeEventListener("scroll", handler);
-  }, []);
-
-  // Restore scroll after every render
-  useEffect(() => {
-    const el = panelRef.current;
-    if (el && scrollRef.current) {
-      requestAnimationFrame(() => { el.scrollTop = scrollRef.current; });
-    }
-  });
-
   return (
     <div
-      ref={panelRef}
       className="tab-panel"
       style={{ display: id === activeId ? "block" : "none" }}
     >
