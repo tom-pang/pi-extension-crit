@@ -537,6 +537,7 @@ const DiffView = React.memo(function DiffView({
   onCancelComment: () => void;
   splitView: boolean;
 }) {
+
   // Build line annotations from existing comments + pending comment form
   const lineAnnotations: DiffLineAnnotation<string>[] = useMemo(() => {
     const annos: DiffLineAnnotation<string>[] = [];
@@ -757,8 +758,29 @@ const MemoizedTabPanel = React.memo(function MemoizedTabPanel({
     [pendingComment, id]
   );
 
+  // Preserve scroll position across re-renders (comment add/edit/delete)
+  const panelRef = useRef<HTMLDivElement>(null);
+  const scrollRef = useRef(0);
+
+  useEffect(() => {
+    const el = panelRef.current;
+    if (!el) return;
+    const handler = () => { scrollRef.current = el.scrollTop; };
+    el.addEventListener("scroll", handler, { passive: true });
+    return () => el.removeEventListener("scroll", handler);
+  }, []);
+
+  // Restore scroll after every render
+  useEffect(() => {
+    const el = panelRef.current;
+    if (el && scrollRef.current) {
+      requestAnimationFrame(() => { el.scrollTop = scrollRef.current; });
+    }
+  });
+
   return (
     <div
+      ref={panelRef}
       className="tab-panel"
       style={{ display: id === activeId ? "block" : "none" }}
     >
