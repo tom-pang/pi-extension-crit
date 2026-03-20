@@ -741,7 +741,8 @@ export default function (pi: ExtensionAPI) {
       // Decide mode: file path, jj revset, or default (working copy)
       let mode: "file" | "revset" | "default" = "default";
       if (arg) {
-        const absPath = resolve(ctx.cwd, arg);
+        const expanded = arg.startsWith("~/") ? join(homedir(), arg.slice(2)) : arg;
+        const absPath = resolve(ctx.cwd, expanded);
         if (existsSync(absPath)) {
           mode = "file";
         } else {
@@ -761,7 +762,8 @@ export default function (pi: ExtensionAPI) {
 
       // ─── Single-file mode ───
       if (mode === "file") {
-        const absPath = resolve(ctx.cwd, arg!);
+        const expandedArg = arg!.startsWith("~/") ? join(homedir(), arg!.slice(2)) : arg!;
+        const absPath = resolve(ctx.cwd, expandedArg);
 
         const jjCheck = await pi.exec("jj", ["root"]);
         const inJjRepo = jjCheck.code === 0;
@@ -778,7 +780,7 @@ export default function (pi: ExtensionAPI) {
           branch = branchResult.stdout.trim();
 
           const diffResult = await pi.exec("jj", [
-            "diff", "--git", "--context=100", "--", arg!,
+            "diff", "--git", "--context=100", "--", expandedArg,
           ]);
           unstaged = diffResult.stdout || "";
         }
@@ -787,7 +789,7 @@ export default function (pi: ExtensionAPI) {
         if (!unstaged) {
           try {
             const content = readFileSync(absPath, "utf-8");
-            untracked.push({ path: arg!, content });
+            untracked.push({ path: expandedArg, content });
           } catch (e: any) {
             ctx.ui.notify(`Cannot read file: ${e.message}`, "error");
             return;
