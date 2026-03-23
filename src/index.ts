@@ -3,6 +3,8 @@ import { dirname, join, basename, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import { writeFileSync, readFileSync, existsSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
+import { prepareViewerData } from "./prepare-viewer-data.js";
+import { buildReproData } from "./repro-data.js";
 
 const baseDir = dirname(fileURLToPath(import.meta.url));
 const distDir = join(baseDir, "..", "dist");
@@ -262,10 +264,10 @@ function writeShellHTML() {
   }
 
   .main-content { flex: 1; overflow: hidden; position: relative; }
-  .tab-panel { height: 100%; overflow-y: auto; overflow-x: hidden; }
-  .tab-panel::-webkit-scrollbar { width: 8px; }
-  .tab-panel::-webkit-scrollbar-track { background: transparent; }
-  .tab-panel::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.12); border-radius: 4px; }
+  .tab-panel, .repro-panel { height: 100%; overflow-y: auto; overflow-x: hidden; }
+  .tab-panel::-webkit-scrollbar, .repro-panel::-webkit-scrollbar { width: 8px; }
+  .tab-panel::-webkit-scrollbar-track, .repro-panel::-webkit-scrollbar-track { background: transparent; }
+  .tab-panel::-webkit-scrollbar-thumb, .repro-panel::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.12); border-radius: 4px; }
   .diff-content { padding: 0; }
 
   .empty-state {
@@ -282,28 +284,6 @@ function writeShellHTML() {
   }
 
   /* ─── Comment UI ─── */
-  .gutter-plus-btn {
-    width: 20px;
-    height: 20px;
-    border: none;
-    border-radius: 4px;
-    background: #bd93f9;
-    color: white;
-    font-size: 14px;
-    font-weight: 700;
-    line-height: 1;
-    cursor: pointer;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    opacity: 0.85;
-    transition: opacity 0.1s, transform 0.1s;
-  }
-  .gutter-plus-btn:hover {
-    opacity: 1;
-    transform: scale(1.1);
-  }
-
   .comment-form {
     background: #44475a;
     border: 1px solid rgba(59, 130, 246, 0.3);
@@ -696,6 +676,72 @@ function writeCommentFile(repoName: string, branch: string): string | null {
   return filePath;
 }
 
+async function detectFrontmostWindowGeometry(pi: ExtensionAPI) {
+  try {
+    const geo = await pi.exec("osascript", ["-e", `
+tell application "System Events"
+  set fp to first application process whose frontmost is true
+  set {wx, wy} to position of window 1 of fp
+  set {ww, wh} to size of window 1 of fp
+end tell
+return "" & wx & "," & wy & "," & ww & "," & wh`]);
+    if (geo.code === 0 && geo.stdout.trim()) {
+      const [x, y, w, h] = geo.stdout.trim().split(",").map(Number);
+      if ([x, y, w, h].every((n) => !isNaN(n))) {
+        return { x, y, width: w, height: h };
+      }
+    }
+  } catch {}
+  return null;
+}
+
+async function openViewerWindow(pi: ExtensionAPI, ctx: any, title: string, dataJSON: string, termGeom?: { x: number; y: number; width: number; height: number } | null) {
+  if (win && ready) {
+    try {
+      win.send("1");
+    } catch {
+      win = null;
+      ready = false;
+    }
+  }
+
+  if (!win) {
+    win = openFn(null, {
+      width: termGeom?.width ?? 1120,
+      height: termGeom?.height ?? 760,
+      title,
+    });
+    ready = false;
+    wireWindow(win);
+  }
+
+  try {
+    await waitForReady();
+  } catch (e: any) {
+    ctx.ui.notify(`Crit viewer failed: ${e.message}`, "error");
+    win = null;
+    ready = false;
+    return false;
+  }
+
+  win.send(`window.updateCrit(${dataJSON})`);
+  win.show({ title });
+
+  if (termGeom) {
+    try {
+      await pi.exec("osascript", ["-e", `
+tell application "System Events"
+  tell process "Glimpse"
+    set position of window 1 to {${termGeom.x}, ${termGeom.y}}
+    set size of window 1 to {${termGeom.width}, ${termGeom.height}}
+  end tell
+end tell`]);
+    } catch {}
+  }
+
+  return true;
+}
+
 export default function (pi: ExtensionAPI) {
   // Write shell.html, load glimpse, then prewarm
   (async () => {
@@ -912,60 +958,13 @@ export default function (pi: ExtensionAPI) {
 
         data = { staged: "", unstaged, untracked: [], repoName, branch, commits };
       }
-      const dataJSON = JSON.stringify(data);
+      const viewerData = await prepareViewerData(data);
+      const dataJSON = JSON.stringify(viewerData);
 
       // Reset comments for this session
       activeComments = new Map();
 
-      // Detect the frontmost terminal window geometry so Crit overlaps it
-      // Captures position/size in AppleScript coords (top-left origin) for later repositioning
-      let termGeom: { x: number; y: number; width: number; height: number } | null = null;
-      try {
-        const geo = await pi.exec("osascript", ["-e", `
-tell application "System Events"
-  set fp to first application process whose frontmost is true
-  set {wx, wy} to position of window 1 of fp
-  set {ww, wh} to size of window 1 of fp
-end tell
-return "" & wx & "," & wy & "," & ww & "," & wh`]);
-        if (geo.code === 0 && geo.stdout.trim()) {
-          const [x, y, w, h] = geo.stdout.trim().split(",").map(Number);
-          if ([x, y, w, h].every((n) => !isNaN(n))) {
-            termGeom = { x, y, width: w, height: h };
-          }
-        }
-      } catch {}
-
-      // Open window if needed (reuse prewarmed)
-      // If a prewarmed window exists, verify it's still alive by poking it.
-      // Stale hidden windows can silently die, leaving win non-null but dead.
-      if (win && ready) {
-        try {
-          win.send("1");
-        } catch {
-          win = null;
-          ready = false;
-        }
-      }
-
-      if (!win) {
-        win = openFn(null, {
-          width: termGeom?.width ?? 1120,
-          height: termGeom?.height ?? 760,
-          title: `Crit — ${repoName}`,
-        });
-        ready = false;
-        wireWindow(win);
-      }
-
-      try {
-        await waitForReady();
-      } catch (e: any) {
-        ctx.ui.notify(`Crit viewer failed: ${e.message}`, "error");
-        win = null;
-        ready = false;
-        return;
-      }
+      const termGeom = await detectFrontmostWindowGeometry(pi);
 
       // Show widget before opening the window so it's visible immediately
       const reviewing = mode === "default" ? "working changes" : arg!;
@@ -998,20 +997,9 @@ return "" & wx & "," & wy & "," & ww & "," & wh`]);
         ctx.ui.setWidget("crit", [`🔍 reviewing ${reviewing} (Escape to exit)`]);
       }
 
-      win.send(`window.updateCrit(${dataJSON})`);
-      win.show({ title: `Crit — ${repoName}` });
-
-      // Resize and reposition the window to overlap the terminal
-      if (termGeom) {
-        try {
-          await pi.exec("osascript", ["-e", `
-tell application "System Events"
-  tell process "Glimpse"
-    set position of window 1 to {${termGeom.x}, ${termGeom.y}}
-    set size of window 1 to {${termGeom.width}, ${termGeom.height}}
-  end tell
-end tell`]);
-        } catch {}
+      if (!(await openViewerWindow(pi, ctx, `Crit — ${repoName}`, dataJSON, termGeom))) {
+        ctx.ui.setWidget("crit", undefined);
+        return;
       }
 
       // Block until the window is closed
@@ -1036,6 +1024,46 @@ end tell`]);
       } else {
         ctx.ui.notify("No comments were left", "info");
       }
+    },
+  });
+
+  pi.registerCommand("crit-repro", {
+    description: "Open a minimal long-file @pierre/diffs repro in a native window.",
+    handler: async (_args, ctx) => {
+      if (!existsSync(viewerPath)) {
+        ctx.ui.notify(
+          "Viewer not built. Run 'npm run build' in the pi-extension-crit package directory.",
+          "error"
+        );
+        return;
+      }
+
+      if (!openFn) {
+        try {
+          const glimpse = await import(glimpsePath);
+          openFn = glimpse.open;
+        } catch (e: any) {
+          ctx.ui.notify(`Failed to load Glimpse: ${e.message}`, "error");
+          return;
+        }
+      }
+
+      if (!existsSync(shellPath)) writeShellHTML();
+
+      activeComments = new Map();
+      const reproData = await buildReproData();
+      const dataJSON = JSON.stringify(reproData);
+      const termGeom = await detectFrontmostWindowGeometry(pi);
+
+      ctx.ui.setWidget("crit", ["🔬 running crit repro (Escape to exit)"]);
+
+      if (!(await openViewerWindow(pi, ctx, "Crit Repro", dataJSON, termGeom))) {
+        ctx.ui.setWidget("crit", undefined);
+        return;
+      }
+
+      await waitForClose(ctx);
+      ctx.ui.setWidget("crit", undefined);
     },
   });
 }

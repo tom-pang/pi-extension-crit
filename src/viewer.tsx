@@ -3,23 +3,8 @@ import { createRoot } from "react-dom/client";
 import { PatchDiff, MultiFileDiff } from "@pierre/diffs/react";
 import type { FileDiffOptions } from "@pierre/diffs/react";
 import type { DiffLineAnnotation } from "@pierre/diffs";
-import { createScrollGuard } from "./scroll-guard.js";
-
-interface CommitInfo {
-  hash: string;
-  message: string;
-  time: string;
-  diff: string;
-}
-
-interface DiffData {
-  staged: string;
-  unstaged: string;
-  untracked: { path: string; content: string }[];
-  repoName: string;
-  branch: string;
-  commits: CommitInfo[];
-}
+import { critDiffOptions } from "./diff-options.js";
+import { buildDiffViewOptions } from "./diff-view-options.js";
 
 interface FileEntry {
   id: string;
@@ -30,7 +15,35 @@ interface FileEntry {
   deletions: number;
   patch?: string;
   content?: string;
+  prerenderedHTML: string;
 }
+
+interface CommitInfo {
+  hash: string;
+  message: string;
+  time: string;
+  files: FileEntry[];
+}
+
+interface CritData {
+  repoName: string;
+  branch: string;
+  workingFiles: FileEntry[];
+  commits: CommitInfo[];
+}
+
+interface ReproData {
+  mode: "repro";
+  title: string;
+  file: {
+    path: string;
+    oldContent: string;
+    newContent: string;
+    prerenderedHTML: string;
+  };
+}
+
+type ViewerData = CritData | ReproData;
 
 interface Comment {
   id: string;
@@ -42,7 +55,7 @@ interface Comment {
 
 declare global {
   interface Window {
-    updateCrit: (data: DiffData) => void;
+    updateCrit: (data: ViewerData) => void;
   }
 }
 
@@ -60,132 +73,15 @@ const SECTION_LABELS = {
   committed: "Committed",
 } as const;
 
-const diffOptions: FileDiffOptions<string> = {
-  theme: "dracula",
-  diffStyle: "unified",
-  overflow: "scroll",
-  themeType: "dark",
-  enableGutterUtility: true,
-  hunkSeparators: "line-info",
-  expansionLineCount: 50,
-};
-
-/** Split a combined git diff into individual per-file patches. */
-function splitPatch(patch: string): string[] {
-  const parts: string[] = [];
-  const lines = patch.split("\n");
-  let current: string[] = [];
-
-  for (const line of lines) {
-    if (line.startsWith("diff --git ") && current.length > 0) {
-      parts.push(current.join("\n"));
-      current = [];
-    }
-    current.push(line);
-  }
-  if (current.length > 0 && current.some((l) => l.startsWith("diff --git "))) {
-    parts.push(current.join("\n"));
-  }
-  return parts;
-}
-
-/** Extract file path from a git diff header like "diff --git a/foo/bar.ts b/foo/bar.ts" */
-function extractPathFromPatch(patch: string): string {
-  const match = patch.match(/^diff --git a\/(.*?) b\/(.*)/m);
-  if (match) return match[2];
-  return "unknown";
-}
-
-/** Count additions and deletions from a patch */
-function countChanges(patch: string): { additions: number; deletions: number } {
-  let additions = 0;
-  let deletions = 0;
-  for (const line of patch.split("\n")) {
-    if (line.startsWith("@@")) continue;
-    if (line.startsWith("+") && !line.startsWith("+++")) additions++;
-    if (line.startsWith("-") && !line.startsWith("---")) deletions++;
-  }
-  return { additions, deletions };
-}
-
-/** Build file entries for working changes */
-function buildWorkingEntries(data: DiffData): FileEntry[] {
-  const entries: FileEntry[] = [];
-
-  if (data.staged.trim()) {
-    for (const patch of splitPatch(data.staged)) {
-      const path = extractPathFromPatch(patch);
-      const { additions, deletions } = countChanges(patch);
-      entries.push({
-        id: `staged:${path}`,
-        name: path.split("/").pop() || path,
-        path,
-        section: "staged",
-        additions,
-        deletions,
-        patch,
-      });
-    }
-  }
-
-  if (data.unstaged.trim()) {
-    for (const patch of splitPatch(data.unstaged)) {
-      const path = extractPathFromPatch(patch);
-      const { additions, deletions } = countChanges(patch);
-      entries.push({
-        id: `unstaged:${path}`,
-        name: path.split("/").pop() || path,
-        path,
-        section: "unstaged",
-        additions,
-        deletions,
-        patch,
-      });
-    }
-  }
-
-  for (const { path, content } of data.untracked) {
-    const lineCount = content.split("\n").length;
-    entries.push({
-      id: `untracked:${path}`,
-      name: path.split("/").pop() || path,
-      path,
-      section: "untracked",
-      additions: lineCount,
-      deletions: 0,
-      content,
-    });
-  }
-
-  return entries;
-}
-
-/** Build file entries for a specific commit */
-function buildCommitEntries(commit: CommitInfo): FileEntry[] {
-  const entries: FileEntry[] = [];
-  for (const patch of splitPatch(commit.diff)) {
-    const path = extractPathFromPatch(patch);
-    const { additions, deletions } = countChanges(patch);
-    entries.push({
-      id: `commit:${commit.hash}:${path}`,
-      name: path.split("/").pop() || path,
-      path,
-      section: "committed",
-      additions,
-      deletions,
-      patch,
-    });
-  }
-  return entries;
-}
+const diffOptions: FileDiffOptions<string> = critDiffOptions;
 
 /** Check if there are any working changes */
-function hasWorkingChanges(data: DiffData): boolean {
-  return (
-    data.staged.trim().length > 0 ||
-    data.unstaged.trim().length > 0 ||
-    data.untracked.length > 0
-  );
+function isReproData(data: ViewerData): data is ReproData {
+  return "mode" in data && data.mode === "repro";
+}
+
+function hasWorkingChanges(data: CritData): boolean {
+  return data.workingFiles.length > 0;
 }
 
 /** Send a message to the extension via Glimpse */
@@ -308,28 +204,6 @@ function CommentBubble({
   );
 }
 
-// ─── Gutter "+" Button (rendered by @pierre/diffs) ───
-
-function GutterPlusButton({
-  getHoveredLine,
-  onClickAdd,
-}: {
-  getHoveredLine: () => { lineNumber: number; side: "additions" | "deletions" } | undefined;
-  onClickAdd: (lineNumber: number, side: "additions" | "deletions") => void;
-}) {
-  return (
-    <button
-      className="gutter-plus-btn"
-      onClick={() => {
-        const hovered = getHoveredLine();
-        if (hovered) onClickAdd(hovered.lineNumber, hovered.side);
-      }}
-    >
-      +
-    </button>
-  );
-}
-
 // ─── Sidebar ───
 
 function SidebarFile({
@@ -414,7 +288,7 @@ function CommitList({
   workingFileCount,
   onSelect,
 }: {
-  data: DiffData;
+  data: CritData;
   selectedCommitId: string;
   workingFileCount: number;
   onSelect: (id: string) => void;
@@ -640,21 +514,20 @@ const DiffView = React.memo(function DiffView({
     [] // stable — never changes reference
   );
 
-  // Stable callback
-  const renderGutterUtility = useCallback(
-    (getHoveredLine: () => { lineNumber: number; side: "additions" | "deletions" } | undefined) => (
-      <GutterPlusButton getHoveredLine={getHoveredLine} onClickAdd={(ln, side) => onStartRef.current(ln, side)} />
-    ),
-    [] // stable
+  const handleGutterUtilityClick = useCallback(
+    (range: { start: number; side?: "additions" | "deletions" | null }) => {
+      if (range.side == null) return;
+      onStartRef.current(range.start, range.side);
+    },
+    []
   );
 
   const opts: FileDiffOptions<string> = useMemo(
-    () => ({
-      ...diffOptions,
-      diffStyle: splitView ? "split" as const : "unified" as const,
-      enableGutterUtility: true,
+    () => buildDiffViewOptions({
+      splitView,
+      onGutterUtilityClick: handleGutterUtilityClick,
     }),
-    [splitView]
+    [handleGutterUtilityClick, splitView]
   );
 
   if (file.section === "untracked") {
@@ -663,10 +536,10 @@ const DiffView = React.memo(function DiffView({
         <MultiFileDiff
           oldFile={{ name: file.path, contents: "" }}
           newFile={{ name: file.path, contents: file.content || "" }}
+          prerenderedHTML={file.prerenderedHTML}
           options={opts}
           lineAnnotations={lineAnnotations}
           renderAnnotation={renderAnnotation}
-          renderGutterUtility={renderGutterUtility}
         />
       </div>
     );
@@ -676,10 +549,10 @@ const DiffView = React.memo(function DiffView({
     <div className="diff-content">
       <PatchDiff
         patch={file.patch || ""}
+        prerenderedHTML={file.prerenderedHTML}
         options={opts}
         lineAnnotations={lineAnnotations}
         renderAnnotation={renderAnnotation}
-        renderGutterUtility={renderGutterUtility}
       />
     </div>
   );
@@ -777,43 +650,8 @@ const MemoizedTabPanel = React.memo(function MemoizedTabPanel({
     [pendingComment, id]
   );
 
-  // WebKit lacks overflow-anchor. When @pierre/diffs mutates DOM (progressive
-  // rendering, hunk collapse, etc.), WebKit can snap the panel back upward.
-  // Keep the last stable user scroll position, but only restore it after the
-  // user has been idle briefly so we do not fight active scrolling.
-  const panelRef = useRef<HTMLDivElement>(null);
-  const scrollGuardRef = useRef(createScrollGuard());
-
-  useEffect(() => {
-    const el = panelRef.current;
-    if (!el) return;
-
-    const scrollGuard = scrollGuardRef.current;
-    scrollGuard.recordInitialTop(el.scrollTop);
-
-    const onScroll = () => {
-      scrollGuard.recordUserScroll(el.scrollTop, performance.now());
-    };
-    el.addEventListener("scroll", onScroll, { passive: true });
-
-    const observer = new MutationObserver(() => {
-      const restoreTop = scrollGuard.getRestoreTarget(el.scrollTop, performance.now());
-      if (restoreTop === null) return;
-
-      el.scrollTop = restoreTop;
-      scrollGuard.recordProgrammaticScroll(restoreTop);
-    });
-    observer.observe(el, { childList: true, subtree: true, characterData: true });
-
-    return () => {
-      el.removeEventListener("scroll", onScroll);
-      observer.disconnect();
-    };
-  }, []);
-
   return (
     <div
-      ref={panelRef}
       className="tab-panel"
       style={{ display: id === activeId ? "block" : "none" }}
     >
@@ -834,7 +672,20 @@ const MemoizedTabPanel = React.memo(function MemoizedTabPanel({
 
 // ─── Main App ───
 
-function App({ data }: { data: DiffData }) {
+function ReproApp({ data }: { data: ReproData }) {
+  return (
+    <div className="repro-panel">
+      <MultiFileDiff
+        oldFile={{ name: data.file.path, contents: data.file.oldContent }}
+        newFile={{ name: data.file.path, contents: data.file.newContent }}
+        prerenderedHTML={data.file.prerenderedHTML}
+        options={diffOptions}
+      />
+    </div>
+  );
+}
+
+function App({ data }: { data: CritData }) {
   const dirty = hasWorkingChanges(data);
   const defaultCommitId = dirty ? "working" : (data.commits[0]?.hash ?? "working");
 
@@ -875,13 +726,13 @@ function App({ data }: { data: DiffData }) {
 
   // Files for current selection
   const files = useMemo(() => {
-    if (selectedCommitId === "working") return buildWorkingEntries(data);
+    if (selectedCommitId === "working") return data.workingFiles;
     const commit = data.commits.find((c) => c.hash === selectedCommitId);
-    return commit ? buildCommitEntries(commit) : [];
+    return commit ? commit.files : [];
   }, [selectedCommitId, data]);
 
   const filesMap = useMemo(() => new Map(files.map((f) => [f.id, f])), [files]);
-  const workingFileCount = useMemo(() => buildWorkingEntries(data).length, [data]);
+  const workingFileCount = data.workingFiles.length;
 
   // Comment counts per file path
   const commentCounts = useMemo(() => {
@@ -997,7 +848,6 @@ function App({ data }: { data: DiffData }) {
   }, [files]);
 
   const openTabSet = useMemo(() => new Set(openTabs), [openTabs]);
-  const activeFile = activeId ? filesMap.get(activeId) : null;
   const totalFiles = files.length;
 
   const handleCommitSelect = useCallback((id: string) => {
@@ -1136,13 +986,13 @@ class ErrorBoundary extends React.Component<
 
 const root = createRoot(document.getElementById("app")!);
 
-window.updateCrit = (data: DiffData) => {
+window.updateCrit = (data: ViewerData) => {
   const loading = document.getElementById("loading");
   if (loading) loading.style.display = "none";
   document.getElementById("app")!.style.display = "block";
   root.render(
     <ErrorBoundary>
-      <App data={data} />
+      {isReproData(data) ? <ReproApp data={data} /> : <App data={data} />}
     </ErrorBoundary>
   );
 };
