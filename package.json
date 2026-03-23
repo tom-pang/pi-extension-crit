@@ -5,7 +5,8 @@
   "type": "module",
   "scripts": {
     "build": "bun build src/viewer.tsx --bundle --minify --outfile dist/viewer.js --define 'process.env.NODE_ENV=\"production\"'",
-    "postinstall": "npx esbuild src/viewer.tsx --bundle --minify --outfile=dist/viewer.js --define:process.env.NODE_ENV=\\\"production\\\" --jsx=automatic --format=esm 2>/dev/null || npm run build"
+    "postinstall": "npx esbuild src/viewer.tsx --bundle --minify --outfile=dist/viewer.js --define:process.env.NODE_ENV=\\\"production\\\" --jsx=automatic --format=esm 2>/dev/null || npm run build",
+    "test": "node --test"
   },
   "dependencies": {
     "@pierre/diffs": "^1.0.11",
