@@ -3,6 +3,7 @@ import { createRoot } from "react-dom/client";
 import { PatchDiff, MultiFileDiff } from "@pierre/diffs/react";
 import type { FileDiffOptions } from "@pierre/diffs/react";
 import type { DiffLineAnnotation } from "@pierre/diffs";
+import { createScrollGuard } from "./scroll-guard.js";
 
 interface CommitInfo {
   hash: string;
@@ -777,26 +778,30 @@ const MemoizedTabPanel = React.memo(function MemoizedTabPanel({
   );
 
   // WebKit lacks overflow-anchor. When @pierre/diffs mutates DOM (progressive
-  // rendering, hunk collapse, etc.), WebKit resets scrollTop. Use MutationObserver
-  // to detect DOM changes and restore scroll synchronously before paint.
+  // rendering, hunk collapse, etc.), WebKit can snap the panel back upward.
+  // Keep the last stable user scroll position, but only restore it after the
+  // user has been idle briefly so we do not fight active scrolling.
   const panelRef = useRef<HTMLDivElement>(null);
-  const scrollRef = useRef(0);
-  const userScrolling = useRef(true);
+  const scrollGuardRef = useRef(createScrollGuard());
 
   useEffect(() => {
     const el = panelRef.current;
     if (!el) return;
 
-    // Track user scroll
-    const onScroll = () => { scrollRef.current = el.scrollTop; userScrolling.current = true; };
+    const scrollGuard = scrollGuardRef.current;
+    scrollGuard.recordInitialTop(el.scrollTop);
+
+    const onScroll = () => {
+      scrollGuard.recordUserScroll(el.scrollTop, performance.now());
+    };
     el.addEventListener("scroll", onScroll, { passive: true });
 
-    // When DOM mutates inside the panel, restore scroll if it was reset
     const observer = new MutationObserver(() => {
-      if (el.scrollTop !== scrollRef.current && !userScrolling.current) {
-        el.scrollTop = scrollRef.current;
-      }
-      userScrolling.current = false;
+      const restoreTop = scrollGuard.getRestoreTarget(el.scrollTop, performance.now());
+      if (restoreTop === null) return;
+
+      el.scrollTop = restoreTop;
+      scrollGuard.recordProgrammaticScroll(restoreTop);
     });
     observer.observe(el, { childList: true, subtree: true, characterData: true });
 
