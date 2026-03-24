@@ -1,6 +1,6 @@
 import React, { useState, useCallback, useMemo, useEffect, useRef } from "react";
 import { createRoot } from "react-dom/client";
-import { PatchDiff, MultiFileDiff } from "@pierre/diffs/react";
+import { MultiFileDiff } from "@pierre/diffs/react";
 import type { FileDiffOptions } from "@pierre/diffs/react";
 import type { DiffLineAnnotation } from "@pierre/diffs";
 import { critDiffOptions } from "./diff-options.js";
@@ -13,8 +13,8 @@ interface FileEntry {
   section: "staged" | "unstaged" | "untracked" | "committed";
   additions: number;
   deletions: number;
-  patch?: string;
-  content?: string;
+  oldContent: string;
+  newContent: string;
   prerenderedHTML: string;
 }
 
@@ -530,25 +530,11 @@ const DiffView = React.memo(function DiffView({
     [handleGutterUtilityClick, splitView]
   );
 
-  if (file.section === "untracked") {
-    return (
-      <div className="diff-content">
-        <MultiFileDiff
-          oldFile={{ name: file.path, contents: "" }}
-          newFile={{ name: file.path, contents: file.content || "" }}
-          prerenderedHTML={file.prerenderedHTML}
-          options={opts}
-          lineAnnotations={lineAnnotations}
-          renderAnnotation={renderAnnotation}
-        />
-      </div>
-    );
-  }
-
   return (
     <div className="diff-content">
-      <PatchDiff
-        patch={file.patch || ""}
+      <MultiFileDiff
+        oldFile={{ name: file.path, contents: file.oldContent }}
+        newFile={{ name: file.path, contents: file.newContent }}
         prerenderedHTML={file.prerenderedHTML}
         options={opts}
         lineAnnotations={lineAnnotations}

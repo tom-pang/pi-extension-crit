@@ -2,28 +2,20 @@ import test from "node:test";
 import assert from "node:assert/strict";
 import { prepareViewerData } from "../src/prepare-viewer-data.js";
 
-test("prepareViewerData splits patches into per-file entries and prerenders each diff", async () => {
-  const patchOne = `diff --git a/src/foo.js b/src/foo.js
-index 1111111..2222222 100644
---- a/src/foo.js
-+++ b/src/foo.js
-@@ -1 +1 @@
--console.log("old");
-+console.log("new");
-`;
-
-  const patchTwo = `diff --git a/src/bar.js b/src/bar.js
-index 3333333..4444444 100644
---- a/src/bar.js
-+++ b/src/bar.js
-@@ -1 +1,2 @@
- export const value = 1;
-+export const next = 2;
-`;
-
+test("prepareViewerData uses old/new file contents and prerenders each diff", async () => {
   const data = await prepareViewerData({
-    staged: "",
-    unstaged: `${patchOne}\n${patchTwo}`,
+    files: [
+      {
+        path: "src/foo.js",
+        oldContent: 'console.log("old");\n',
+        newContent: 'console.log("new");\n',
+      },
+      {
+        path: "src/bar.js",
+        oldContent: "export const value = 1;\n",
+        newContent: "export const value = 1;\nexport const next = 2;\n",
+      },
+    ],
     untracked: [{ path: "src/new.js", content: "export const created = true;\n" }],
     repoName: "demo",
     branch: "main",
@@ -32,7 +24,13 @@ index 3333333..4444444 100644
         hash: "abcdef0",
         message: "Example commit",
         time: "1m",
-        diff: patchOne,
+        files: [
+          {
+            path: "src/foo.js",
+            oldContent: 'console.log("old");\n',
+            newContent: 'console.log("new");\n',
+          },
+        ],
       },
     ],
   });
@@ -55,6 +53,13 @@ index 3333333..4444444 100644
     ]
   );
 
+  // All files should have oldContent and newContent
+  for (const file of data.workingFiles) {
+    assert.equal(typeof file.oldContent, "string");
+    assert.equal(typeof file.newContent, "string");
+  }
+
+  // All files should have prerendered HTML
   for (const file of data.workingFiles) {
     assert.equal(typeof file.prerenderedHTML, "string");
     assert.match(file.prerenderedHTML, /data-dehydrated/);

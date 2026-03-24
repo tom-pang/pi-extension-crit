@@ -1,69 +1,34 @@
-import { preloadMultiFileDiff, preloadPatchDiff } from "@pierre/diffs/ssr";
+import { preloadMultiFileDiff } from "@pierre/diffs/ssr";
+import { parseDiffFromFile } from "@pierre/diffs";
 import { critDiffOptions } from "./diff-options.js";
 
-function splitPatch(patch) {
-  const parts = [];
-  const lines = patch.split("\n");
-  let current = [];
-
-  for (const line of lines) {
-    if (line.startsWith("diff --git ") && current.length > 0) {
-      parts.push(current.join("\n"));
-      current = [];
-    }
-    current.push(line);
-  }
-
-  if (current.length > 0 && current.some((line) => line.startsWith("diff --git "))) {
-    parts.push(current.join("\n"));
-  }
-
-  return parts;
-}
-
-function extractPathFromPatch(patch) {
-  const match = patch.match(/^diff --git a\/(.*?) b\/(.*)/m);
-  if (match) return match[2];
-  return "unknown";
-}
-
-function countChanges(patch) {
+function countChangesFromDiff(oldContent, newContent, path) {
+  const fileDiff = parseDiffFromFile(
+    { name: path, contents: oldContent },
+    { name: path, contents: newContent }
+  );
   let additions = 0;
   let deletions = 0;
-
-  for (const line of patch.split("\n")) {
-    if (line.startsWith("@@")) continue;
-    if (line.startsWith("+") && !line.startsWith("+++")) additions++;
-    if (line.startsWith("-") && !line.startsWith("---")) deletions++;
+  for (const hunk of fileDiff.hunks) {
+    additions += hunk.additionLines;
+    deletions += hunk.deletionLines;
   }
-
   return { additions, deletions };
 }
 
-async function prerenderPatch(patch) {
-  const { prerenderedHTML } = await preloadPatchDiff({
-    patch,
-    options: critDiffOptions,
-  });
-  return prerenderedHTML;
-}
-
-async function prerenderUntracked(path, content) {
+async function prerenderFileDiff(path, oldContent, newContent) {
   const { prerenderedHTML } = await preloadMultiFileDiff({
-    oldFile: { name: path, contents: "" },
-    newFile: { name: path, contents: content },
+    oldFile: { name: path, contents: oldContent },
+    newFile: { name: path, contents: newContent },
     options: critDiffOptions,
   });
   return prerenderedHTML;
 }
 
-async function preparePatchEntries(patch, section, idPrefix = "") {
-  const patches = patch.trim() ? splitPatch(patch) : [];
-
+async function prepareFileEntries(files, section, idPrefix = "") {
   return Promise.all(
-    patches.map(async (filePatch) => {
-      const path = extractPathFromPatch(filePatch);
-      const { additions, deletions } = countChanges(filePatch);
+    files.map(async ({ path, oldContent, newContent }) => {
+      const { additions, deletions } = countChangesFromDiff(oldContent, newContent, path);
       return {
         id: `${idPrefix}${path}`,
         name: path.split("/").pop() || path,
@@ -71,8 +36,9 @@ async function preparePatchEntries(patch, section, idPrefix = "") {
         section,
         additions,
         deletions,
-        patch: filePatch,
-        prerenderedHTML: await prerenderPatch(filePatch),
+        oldContent,
+        newContent,
+        prerenderedHTML: await prerenderFileDiff(path, oldContent, newContent),
       };
     })
   );
@@ -87,23 +53,23 @@ async function prepareUntrackedEntries(untracked) {
       section: "untracked",
       additions: content.split("\n").length,
       deletions: 0,
-      content,
-      prerenderedHTML: await prerenderUntracked(path, content),
+      oldContent: "",
+      newContent: content,
+      prerenderedHTML: await prerenderFileDiff(path, "", content),
     }))
   );
 }
 
 export async function prepareViewerData(rawData) {
-  const [stagedFiles, unstagedFiles, untrackedFiles, commits] = await Promise.all([
-    preparePatchEntries(rawData.staged || "", "staged", "staged:"),
-    preparePatchEntries(rawData.unstaged || "", "unstaged", "unstaged:"),
+  const [changedFiles, untrackedFiles, commits] = await Promise.all([
+    prepareFileEntries(rawData.files || [], "unstaged", "unstaged:"),
     prepareUntrackedEntries(rawData.untracked || []),
     Promise.all(
       (rawData.commits || []).map(async (commit) => ({
         hash: commit.hash,
         message: commit.message,
         time: commit.time,
-        files: await preparePatchEntries(commit.diff || "", "committed", `commit:${commit.hash}:`),
+        files: await prepareFileEntries(commit.files || [], "committed", `commit:${commit.hash}:`),
       }))
     ),
   ]);
@@ -111,7 +77,7 @@ export async function prepareViewerData(rawData) {
   return {
     repoName: rawData.repoName,
     branch: rawData.branch,
-    workingFiles: [...stagedFiles, ...unstagedFiles, ...untrackedFiles],
+    workingFiles: [...changedFiles, ...untrackedFiles],
     commits,
   };
 }

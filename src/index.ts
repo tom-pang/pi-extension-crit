@@ -742,6 +742,49 @@ end tell`]);
   return true;
 }
 
+/**
+ * Fetch old+new file contents for all changed files in a revision.
+ * Pass null for working copy changes (compares @- to @).
+ * Pass a commit hash for a specific commit (compares parent to commit).
+ */
+async function getChangedFileContents(
+  pi: ExtensionAPI,
+  rev: string | null
+): Promise<{ path: string; oldContent: string; newContent: string }[]> {
+  const summaryArgs = rev ? ["diff", "--summary", "-r", rev] : ["diff", "--summary"];
+  const summaryResult = await pi.exec("jj", summaryArgs);
+  const lines = (summaryResult.stdout || "").split("\n").filter((l) => l.trim());
+
+  if (lines.length === 0) return [];
+
+  const oldRev = rev ? `${rev}-` : "@-";
+  const newRev = rev || "@";
+
+  const results = await Promise.all(
+    lines.map(async (line) => {
+      const status = line[0];
+      const path = line.slice(2).trim();
+
+      let oldContent = "";
+      let newContent = "";
+
+      if (status !== "A") {
+        const old = await pi.exec("jj", ["file", "show", "-r", oldRev, path]);
+        oldContent = old.code === 0 ? old.stdout : "";
+      }
+
+      if (status !== "D") {
+        const cur = await pi.exec("jj", ["file", "show", "-r", newRev, path]);
+        newContent = cur.code === 0 ? cur.stdout : "";
+      }
+
+      return { path, oldContent, newContent };
+    })
+  );
+
+  return results;
+}
+
 export default function (pi: ExtensionAPI) {
   // Write shell.html, load glimpse, then prewarm
   (async () => {
@@ -782,7 +825,7 @@ export default function (pi: ExtensionAPI) {
       if (!existsSync(shellPath)) writeShellHTML();
 
       const repoName = basename(ctx.cwd);
-      let data: { staged: string; unstaged: string; untracked: { path: string; content: string }[]; repoName: string; branch: string; commits: any[] };
+      let data: { files: { path: string; oldContent: string; newContent: string }[]; untracked: { path: string; content: string }[]; repoName: string; branch: string; commits: any[] };
 
       // Decide mode: file path, jj revset, or default (working copy)
       let mode: "file" | "revset" | "default" = "default";
@@ -814,7 +857,7 @@ export default function (pi: ExtensionAPI) {
         const jjCheck = await pi.exec("jj", ["root"]);
         const inJjRepo = jjCheck.code === 0;
 
-        let unstaged = "";
+        const files: { path: string; oldContent: string; newContent: string }[] = [];
         const untracked: { path: string; content: string }[] = [];
         let branch = "";
 
@@ -825,14 +868,26 @@ export default function (pi: ExtensionAPI) {
           ]);
           branch = branchResult.stdout.trim();
 
-          const diffResult = await pi.exec("jj", [
-            "diff", "--git", "--context=100", "--", expandedArg,
+          const summaryResult = await pi.exec("jj", [
+            "diff", "--summary", "--", expandedArg,
           ]);
-          unstaged = diffResult.stdout || "";
+          const summary = (summaryResult.stdout || "").trim();
+
+          if (summary) {
+            const [oldResult, newResult] = await Promise.all([
+              pi.exec("jj", ["file", "show", "-r", "@-", expandedArg]),
+              pi.exec("jj", ["file", "show", "-r", "@", expandedArg]),
+            ]);
+            files.push({
+              path: expandedArg,
+              oldContent: oldResult.code === 0 ? oldResult.stdout : "",
+              newContent: newResult.code === 0 ? newResult.stdout : "",
+            });
+          }
         }
 
         // No jj diff — show the whole file for review
-        if (!unstaged) {
+        if (files.length === 0) {
           try {
             const content = readFileSync(absPath, "utf-8");
             untracked.push({ path: expandedArg, content });
@@ -842,7 +897,7 @@ export default function (pi: ExtensionAPI) {
           }
         }
 
-        data = { staged: "", unstaged, untracked, repoName, branch, commits: [] };
+        data = { files, untracked, repoName, branch, commits: [] };
 
       // ─── Revset mode ───
       } else if (mode === "revset") {
@@ -885,18 +940,14 @@ export default function (pi: ExtensionAPI) {
           return;
         }
 
-        const commitDiffs = await Promise.all(
-          parsedCommits.map((c) =>
-            pi.exec("jj", ["diff", "-r", c.hash, "--git", "--context=100"])
-          )
+        const commits = await Promise.all(
+          parsedCommits.map(async (c) => ({
+            ...c,
+            files: await getChangedFileContents(pi, c.hash),
+          }))
         );
 
-        const commits = parsedCommits.map((c, i) => ({
-          ...c,
-          diff: commitDiffs[i].stdout || "",
-        }));
-
-        data = { staged: "", unstaged: "", untracked: [], repoName, branch, commits };
+        data = { files: [], untracked: [], repoName, branch, commits };
 
       // ─── Full repo mode ───
       } else {
@@ -906,15 +957,14 @@ export default function (pi: ExtensionAPI) {
           return;
         }
 
-        const [diffResult, branchResult] = await Promise.all([
-          pi.exec("jj", ["diff", "--git", "--context=100"]),
+        const [branchResult, workingFiles] = await Promise.all([
           pi.exec("jj", [
             "log", "-r", "@-", "--no-graph",
             "-T", "bookmarks",
           ]),
+          getChangedFileContents(pi, null),
         ]);
 
-        const unstaged = diffResult.stdout || "";
         const branch = branchResult.stdout.trim();
 
         // Gather commits since trunk (up to 5)
@@ -940,23 +990,19 @@ export default function (pi: ExtensionAPI) {
           })
           .filter((c) => c.hash);
 
-        const commitDiffs = await Promise.all(
-          parsedCommits.map((c) =>
-            pi.exec("jj", ["diff", "-r", c.hash, "--git", "--context=100"])
-          )
+        const commits = await Promise.all(
+          parsedCommits.map(async (c) => ({
+            ...c,
+            files: await getChangedFileContents(pi, c.hash),
+          }))
         );
 
-        const commits = parsedCommits.map((c, i) => ({
-          ...c,
-          diff: commitDiffs[i].stdout || "",
-        }));
-
-        if (!unstaged && commits.length === 0) {
+        if (workingFiles.length === 0 && commits.length === 0) {
           ctx.ui.notify("No changes", "info");
           return;
         }
 
-        data = { staged: "", unstaged, untracked: [], repoName, branch, commits };
+        data = { files: workingFiles, untracked: [], repoName, branch, commits };
       }
       const viewerData = await prepareViewerData(data);
       const dataJSON = JSON.stringify(viewerData);
@@ -969,20 +1015,20 @@ export default function (pi: ExtensionAPI) {
       // Show widget before opening the window so it's visible immediately
       const reviewing = mode === "default" ? "working changes" : arg!;
 
-      // Compute diffstat from the data we already have
+      // Compute diffstat from the viewer data we already have
       let totalAdd = 0;
       let totalDel = 0;
-      const countPatch = (patch: string) => {
-        for (const line of patch.split("\n")) {
-          if (line.startsWith("+") && !line.startsWith("+++")) totalAdd++;
-          if (line.startsWith("-") && !line.startsWith("---")) totalDel++;
-        }
-      };
       if (mode !== "file") {
-        if (data.staged) countPatch(data.staged);
-        if (data.unstaged) countPatch(data.unstaged);
-        for (const u of data.untracked) totalAdd += u.content.split("\n").length;
-        for (const c of data.commits) countPatch(c.diff);
+        for (const f of viewerData.workingFiles) {
+          totalAdd += f.additions;
+          totalDel += f.deletions;
+        }
+        for (const c of viewerData.commits) {
+          for (const f of c.files) {
+            totalAdd += f.additions;
+            totalDel += f.deletions;
+          }
+        }
       }
       if (mode !== "file") {
         ctx.ui.setWidget("crit", (_tui: any, theme: any) => ({
