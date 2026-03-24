@@ -30,6 +30,7 @@ interface CritData {
   branch: string;
   workingFiles: FileEntry[];
   commits: CommitInfo[];
+  agentFindings?: AgentFinding[];
 }
 
 interface ReproData {
@@ -45,12 +46,32 @@ interface ReproData {
 
 type ViewerData = CritData | ReproData;
 
+interface AgentFinding {
+  file: string;
+  line: number;
+  end_line?: number;
+  priority: string;
+  category?: string;
+  title: string;
+  description: string;
+  suggested_fix?: string;
+  agent: string;
+}
+
 interface Comment {
   id: string;
   filePath: string;
   lineNumber: number;
   side: "additions" | "deletions";
   text: string;
+  source: "user" | "agent";
+  agentInfo?: {
+    agent: string;
+    priority: string;
+    title: string;
+    description: string;
+    suggestedFix?: string;
+  };
 }
 
 declare global {
@@ -198,6 +219,44 @@ function CommentBubble({
           onClick={() => onDelete(comment.id)}
         >
           Delete
+        </button>
+      </div>
+    </div>
+  );
+}
+
+// ─── Agent Comment Display ───
+
+function AgentCommentBubble({
+  comment,
+  onDismiss,
+}: {
+  comment: Comment;
+  onDismiss: (id: string) => void;
+}) {
+  const info = comment.agentInfo!;
+  const pClass = info.priority.toLowerCase();
+
+  return (
+    <div className={`agent-comment-bubble ${pClass}`}>
+      <div className="agent-comment-header">
+        <span className={`agent-comment-priority ${pClass}`}>{info.priority}</span>
+        <span className="agent-comment-agent">{info.agent}</span>
+      </div>
+      <div className="agent-comment-title">{info.title}</div>
+      <div className="agent-comment-description">{info.description}</div>
+      {info.suggestedFix && (
+        <div className="agent-comment-fix">
+          <div className="agent-comment-fix-label">Suggested fix</div>
+          {info.suggestedFix}
+        </div>
+      )}
+      <div className="agent-comment-actions">
+        <button
+          className="agent-comment-dismiss"
+          onClick={() => onDismiss(comment.id)}
+        >
+          Dismiss
         </button>
       </div>
     </div>
@@ -480,9 +539,19 @@ const DiffView = React.memo(function DiffView({
         currentPending.lineNumber === annotation.lineNumber &&
         currentPending.side === annotation.side;
 
+      const agentComments = lineComments.filter((c) => c.source === "agent");
+      const userComments = lineComments.filter((c) => c.source !== "agent");
+
       return (
         <div className="annotation-container">
-          {lineComments.map((c) => (
+          {agentComments.map((c) => (
+            <AgentCommentBubble
+              key={c.id}
+              comment={c}
+              onDismiss={(id) => onDeleteRef.current(id)}
+            />
+          ))}
+          {userComments.map((c) => (
             <CommentBubble
               key={c.id}
               comment={c}
@@ -678,7 +747,25 @@ function App({ data }: { data: CritData }) {
   const [selectedCommitId, setSelectedCommitId] = useState<string>(defaultCommitId);
   const [openTabs, setOpenTabs] = useState<string[]>([]);
   const [activeId, setActiveId] = useState<string | null>(null);
-  const [comments, setComments] = useState<Comment[]>([]);
+  // Initialize comments from agent findings if present
+  const [comments, setComments] = useState<Comment[]>(() => {
+    if (!data.agentFindings?.length) return [];
+    return data.agentFindings.map((f, i) => ({
+      id: `agent-${i}`,
+      filePath: f.file,
+      lineNumber: f.line,
+      side: "additions" as const,
+      text: `[${f.priority}] ${f.title}\n\n${f.description}${f.suggested_fix ? `\n\nFix: ${f.suggested_fix}` : ""}`,
+      source: "agent" as const,
+      agentInfo: {
+        agent: f.agent,
+        priority: f.priority,
+        title: f.title,
+        description: f.description,
+        suggestedFix: f.suggested_fix,
+      },
+    }));
+  });
   const [pendingComment, setPendingComment] = useState<{
     fileId: string;
     lineNumber: number;
@@ -730,11 +817,22 @@ function App({ data }: { data: CritData }) {
   }, [comments]);
 
   // When commit selection changes, reset tabs and auto-select first file
+  // If agent findings exist, open files with findings first
   useEffect(() => {
     if (files.length > 0) {
-      const first = files[0];
-      setOpenTabs([first.id]);
-      setActiveId(first.id);
+      // If there are agent findings, open files that have findings
+      const findingFiles = new Set(
+        comments.filter((c) => c.source === "agent").map((c) => c.filePath)
+      );
+      const tabsToOpen = files.filter((f) => findingFiles.has(f.path));
+      if (tabsToOpen.length > 0) {
+        setOpenTabs(tabsToOpen.map((f) => f.id));
+        setActiveId(tabsToOpen[0].id);
+      } else {
+        const first = files[0];
+        setOpenTabs([first.id]);
+        setActiveId(first.id);
+      }
     } else {
       setOpenTabs([]);
       setActiveId(null);
@@ -793,26 +891,43 @@ function App({ data }: { data: CritData }) {
       const file = filesMap.get(activeId);
       if (!file) return;
 
+      // Find agent findings on this line to provide reply context
+      const lineFindings = (data.agentFindings || []).filter(
+        (f) => f.file === file.path && f.line === lineNumber
+      );
+
       const comment: Comment = {
         id: nextCommentId(),
         filePath: file.path,
         lineNumber,
         side,
         text,
+        source: "user",
       };
 
       setComments((prev) => [...prev, comment]);
       setPendingComment(null);
 
-      // Send to extension
-      sendToExtension({ type: "comment-added", comment });
+      // Send to extension — include agent finding context if replying to one
+      sendToExtension({
+        type: "comment-added",
+        comment,
+        replyToFindings: lineFindings.length > 0 ? lineFindings : undefined,
+      });
     },
-    [activeId, filesMap]
+    [activeId, filesMap, data.agentFindings]
   );
 
   const handleDeleteComment = useCallback((id: string) => {
-    setComments((prev) => prev.filter((c) => c.id !== id));
-    sendToExtension({ type: "comment-deleted", commentId: id });
+    setComments((prev) => {
+      const comment = prev.find((c) => c.id === id);
+      if (comment?.source === "agent") {
+        sendToExtension({ type: "finding-dismissed", commentId: id, finding: comment.agentInfo });
+      } else {
+        sendToExtension({ type: "comment-deleted", commentId: id });
+      }
+      return prev.filter((c) => c.id !== id);
+    });
   }, []);
 
   const handleEditComment = useCallback((id: string, text: string) => {

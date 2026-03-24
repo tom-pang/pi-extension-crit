@@ -1,6 +1,8 @@
 import type { ExtensionAPI } from "@mariozechner/pi-coding-agent";
+import { Type } from "@sinclair/typebox";
 import { dirname, join, basename, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { execSync } from "node:child_process";
 import { writeFileSync, readFileSync, existsSync, mkdirSync } from "node:fs";
 import { homedir } from "node:os";
 import { prepareViewerData } from "./prepare-viewer-data.js";
@@ -21,16 +23,31 @@ let readyResolve: (() => void) | null = null;
 let lastHeartbeat = 0;
 
 // Comment accumulation for the active /crit session
+interface AgentFindingContext {
+  file: string;
+  line: number;
+  priority: string;
+  title: string;
+  description: string;
+  suggested_fix?: string;
+  agent: string;
+}
+
 interface CritComment {
   id: string;
   filePath: string;
   lineNumber: number;
   side: "additions" | "deletions";
   text: string;
+  replyToFindings?: AgentFindingContext[];
 }
 
 let activeComments: Map<string, CritComment> = new Map();
 let closeResolve: (() => void) | null = null;
+
+// Agent review state — stores prepared viewer data between command and tool call
+let pendingCritReviewData: string | null = null;
+let dismissedFindings: Set<string> = new Set();
 
 /**
  * Write shell.html to dist/ — a tiny HTML file with a loading spinner
@@ -402,6 +419,92 @@ function writeShellHTML() {
     background: rgba(59, 130, 246, 0.1);
   }
 
+  /* ─── Agent Comment Bubbles ─── */
+  .agent-comment-bubble {
+    background: #2a2b3d;
+    border: 1px solid rgba(139, 92, 246, 0.25);
+    border-left: 3px solid;
+    border-radius: 8px;
+    padding: 10px 14px;
+    margin: 6px 16px;
+    font-size: 13px;
+  }
+  .agent-comment-bubble.p0 { border-left-color: #ff5555; }
+  .agent-comment-bubble.p1 { border-left-color: #ffb86c; }
+  .agent-comment-bubble.p2 { border-left-color: #50fa7b; }
+  .agent-comment-bubble.p3 { border-left-color: #6272a4; }
+  .agent-comment-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 6px;
+  }
+  .agent-comment-priority {
+    font-size: 11px;
+    font-weight: 600;
+    padding: 1px 6px;
+    border-radius: 4px;
+    color: white;
+  }
+  .agent-comment-priority.p0 { background: rgba(255, 85, 85, 0.25); color: #ff5555; }
+  .agent-comment-priority.p1 { background: rgba(255, 184, 108, 0.25); color: #ffb86c; }
+  .agent-comment-priority.p2 { background: rgba(80, 250, 123, 0.25); color: #50fa7b; }
+  .agent-comment-priority.p3 { background: rgba(98, 114, 164, 0.25); color: #6272a4; }
+  .agent-comment-agent {
+    font-size: 11px;
+    color: rgba(255, 255, 255, 0.4);
+    font-family: 'Comic Mono', monospace;
+  }
+  .agent-comment-title {
+    font-weight: 600;
+    color: rgba(255, 255, 255, 0.9);
+    margin-bottom: 4px;
+    line-height: 1.4;
+  }
+  .agent-comment-description {
+    color: rgba(255, 255, 255, 0.65);
+    line-height: 1.5;
+    white-space: pre-wrap;
+    word-break: break-word;
+  }
+  .agent-comment-fix {
+    margin-top: 8px;
+    padding: 8px 10px;
+    background: rgba(80, 250, 123, 0.06);
+    border: 1px solid rgba(80, 250, 123, 0.15);
+    border-radius: 6px;
+    font-size: 12px;
+    color: rgba(255, 255, 255, 0.7);
+    line-height: 1.4;
+  }
+  .agent-comment-fix-label {
+    font-size: 10px;
+    font-weight: 600;
+    color: #50fa7b;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    margin-bottom: 4px;
+  }
+  .agent-comment-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-top: 8px;
+  }
+  .agent-comment-dismiss {
+    font-size: 10px;
+    color: rgba(255, 255, 255, 0.3);
+    background: none;
+    border: none;
+    cursor: pointer;
+    padding: 2px 6px;
+    border-radius: 3px;
+  }
+  .agent-comment-dismiss:hover {
+    color: rgba(255, 255, 255, 0.6);
+    background: rgba(255, 255, 255, 0.06);
+  }
+
   .annotation-container {
     width: 100%;
   }
@@ -532,6 +635,9 @@ function wireWindow(w: any) {
     // Comment messages from the viewer
     if (data?.type === "comment-added" && data.comment) {
       const c = data.comment as CritComment;
+      if (data.replyToFindings) {
+        c.replyToFindings = data.replyToFindings;
+      }
       activeComments.set(c.id, c);
     }
     if (data?.type === "comment-deleted" && data.commentId) {
@@ -542,6 +648,11 @@ function wireWindow(w: any) {
       if (existing) {
         activeComments.set(data.commentId, { ...existing, text: data.text });
       }
+    }
+
+    // Track dismissed agent findings
+    if (data?.type === "finding-dismissed" && data.commentId) {
+      dismissedFindings.add(data.commentId);
     }
   });
 
@@ -665,6 +776,21 @@ function writeCommentFile(repoName: string, branch: string): string | null {
     for (const c of fileComments) {
       const side = c.side === "additions" ? "new" : "old";
       md += `### L${c.lineNumber} (${side})\n\n`;
+
+      // If this comment is a reply to agent findings, include the context
+      if (c.replyToFindings?.length) {
+        for (const f of c.replyToFindings) {
+          md += `> **[${f.agent}] ${f.priority}: ${f.title}**\n`;
+          for (const line of f.description.split("\n")) {
+            md += `> ${line}\n`;
+          }
+          if (f.suggested_fix) {
+            md += `> **Suggested fix:** ${f.suggested_fix}\n`;
+          }
+          md += `\n`;
+        }
+      }
+
       md += `${c.text}\n\n`;
     }
   }
@@ -785,6 +911,110 @@ async function getChangedFileContents(
   return results;
 }
 
+// ── VCS Helpers ──────────────────────────────────────────
+
+function execQuiet(cmd: string, cwd?: string): string {
+  try {
+    return execSync(cmd, {
+      encoding: "utf-8",
+      timeout: 10000,
+      stdio: ["pipe", "pipe", "pipe"],
+      cwd,
+    }).trim();
+  } catch {
+    return "";
+  }
+}
+
+function detectVcs(cwd?: string): "jj" | "git" | "none" {
+  const jjRoot = execQuiet("jj root 2>/dev/null", cwd);
+  const gitRoot = execQuiet("git rev-parse --show-toplevel 2>/dev/null", cwd);
+  if (jjRoot && gitRoot) {
+    return jjRoot.length >= gitRoot.length ? "jj" : "git";
+  }
+  if (jjRoot) return "jj";
+  if (gitRoot) return "git";
+  return "none";
+}
+
+// ── Review Agent Config ──────────────────────────────────
+
+const REVIEW_AGENTS = [
+  "review-logic",
+  "review-security",
+  "review-silent-failures",
+  "review-test-coverage",
+  "review-types",
+];
+
+function loadReviewGuidelines(): string | null {
+  const candidates = [
+    join(process.cwd(), "REVIEW_GUIDELINES.md"),
+    join(process.cwd(), ".pi", "review-rules.md"),
+  ];
+  for (const p of candidates) {
+    if (existsSync(p)) {
+      try {
+        const content = readFileSync(p, "utf-8").trim();
+        if (content) return content;
+      } catch {}
+    }
+  }
+  return null;
+}
+
+interface ReviewTarget {
+  label: string;
+  diff_cmd: string;
+}
+
+function buildCritReviewPrompt(target: ReviewTarget, guidelines: string | null): string {
+  const guidelinesBlock = guidelines
+    ? `\n\nThis project has additional review guidelines:\n\n${guidelines}`
+    : "";
+
+  return `You are orchestrating a parallel code review. Follow these steps exactly.
+
+**Step 1:** Use the \`parallel_subagents\` tool to dispatch 5 review specialists simultaneously.
+
+Each agent's task should be:
+
+\`\`\`
+Review the code changes.
+
+Diff command: \`${target.diff_cmd}\`
+
+Review only changes shown in the diff, not pre-existing code. Trace into related files for context as needed.${guidelinesBlock}
+\`\`\`
+
+Call parallel_subagents with:
+\`\`\`
+{
+  "agents": [
+    { "name": "review-logic", "agent": "review-logic", "task": "<the task above>" },
+    { "name": "review-security", "agent": "review-security", "task": "<the task above>" },
+    { "name": "review-silent-failures", "agent": "review-silent-failures", "task": "<the task above>" },
+    { "name": "review-test-coverage", "agent": "review-test-coverage", "task": "<the task above>" },
+    { "name": "review-types", "agent": "review-types", "task": "<the task above>" }
+  ]
+}
+\`\`\`
+
+**Step 2:** After all agents complete, extract the JSON findings block from each agent's summary. Each agent outputs a \`\`\`json code block at the end of its response containing \`{"findings": [...]}\`.
+
+**Step 3:** Merge all findings into a single array. For each finding, add an \`"agent"\` field with the agent name (e.g. "review-logic").
+
+**Step 4:** Deduplicate: if two findings reference the same file and line with similar titles, keep the higher-priority one.
+
+**Step 5:** Sort by priority: P0 first, then P1, P2, P3.
+
+**Step 6:** Call the \`crit_review_findings\` tool with:
+- \`findings\`: the merged findings array
+- \`target\`: "${target.label}"
+- \`agents_used\`: ${JSON.stringify(REVIEW_AGENTS)}
+
+Do not add commentary between steps. Execute the tool calls.`;
+}
 export default function (pi: ExtensionAPI) {
   // Write shell.html, load glimpse, then prewarm
   (async () => {
@@ -1070,6 +1300,258 @@ export default function (pi: ExtensionAPI) {
       } else {
         ctx.ui.notify("No comments were left", "info");
       }
+    },
+  });
+
+  // ── crit_review_findings tool ────────────────────────────
+
+  pi.registerTool({
+    name: "crit_review_findings",
+    label: "crit_review_findings",
+    description:
+      "Open code review findings in the Crit native diff viewer with agent comments in the gutter. Called by the orchestrator after merging findings from all specialist agents.",
+    parameters: Type.Object({
+      findings: Type.Array(
+        Type.Object({
+          file: Type.String(),
+          line: Type.Number(),
+          end_line: Type.Optional(Type.Number()),
+          priority: Type.String(),
+          category: Type.Optional(Type.String()),
+          title: Type.String(),
+          description: Type.String(),
+          suggested_fix: Type.Optional(Type.String()),
+          agent: Type.String(),
+        }),
+        { description: "Merged findings from all review agents" },
+      ),
+      target: Type.String({ description: "What was reviewed" }),
+      agents_used: Type.Array(Type.String(), { description: "Which agents ran" }),
+      elapsed_seconds: Type.Optional(Type.Number({ description: "Total review time in seconds" })),
+    }),
+
+    async execute(_toolCallId, params, _signal, _onUpdate, ctx) {
+      const { findings, target, agents_used } = params;
+
+      if (!pendingCritReviewData) {
+        return {
+          content: [{ type: "text" as const, text: "Error: No pending crit review data. Run /crit-agent-review first." }],
+        };
+      }
+
+      if (!ctx.hasUI) {
+        const summary = findings.length === 0
+          ? "No findings. Code looks good."
+          : findings.map((f: any) => `${f.priority} [${f.agent}] ${f.file}:${f.line} — ${f.title}`).join("\n");
+        pendingCritReviewData = null;
+        return {
+          content: [{ type: "text" as const, text: `Review complete: ${findings.length} findings.\n\n${summary}` }],
+        };
+      }
+
+      // Parse the stored viewer data and inject agent findings
+      const viewerData = JSON.parse(pendingCritReviewData);
+      viewerData.agentFindings = findings;
+      const dataJSON = JSON.stringify(viewerData);
+      pendingCritReviewData = null;
+
+      // Reset tracking state
+      activeComments = new Map();
+      dismissedFindings = new Set();
+
+      const repoName = viewerData.repoName || "review";
+      const termGeom = await detectFrontmostWindowGeometry(pi);
+
+      const findingCounts: Record<string, number> = {};
+      for (const f of findings) {
+        findingCounts[f.priority] = (findingCounts[f.priority] || 0) + 1;
+      }
+      const countStr = Object.entries(findingCounts)
+        .sort(([a], [b]) => a.localeCompare(b))
+        .map(([p, n]) => `${n}×${p}`)
+        .join(" ");
+
+      ctx.ui.setWidget("crit", (_tui: any, theme: any) => ({
+        invalidate() {},
+        render() {
+          return [`🔍 ${agents_used.length} agents found ${findings.length} issues (${countStr}) — reviewing in Crit (Escape to exit)`];
+        },
+      }));
+
+      if (!(await openViewerWindow(pi, ctx, `Crit Review — ${repoName}`, dataJSON, termGeom))) {
+        ctx.ui.setWidget("crit", undefined);
+        return {
+          content: [{ type: "text" as const, text: "Failed to open Crit viewer." }],
+        };
+      }
+
+      // Block until window closes
+      await waitForClose(ctx);
+      ctx.ui.setWidget("crit", undefined);
+
+      // Write user comments to file (same as /crit)
+      const branch = viewerData.branch || "";
+      const critFile = writeCommentFile(repoName, branch);
+
+      // Build summary of what happened
+      const totalFindings = findings.length;
+      const dismissed = dismissedFindings.size;
+      const kept = totalFindings - dismissed;
+      const userCommentCount = activeComments.size;
+
+      let summary = `Review complete: ${totalFindings} findings from ${agents_used.length} agents.\n`;
+      summary += `${kept} findings kept, ${dismissed} dismissed.\n`;
+
+      if (critFile) {
+        summary += `${userCommentCount} user comment(s) saved to ${critFile}.\n`;
+        // Send user comments as follow-up
+        const contents = await pi.exec("cat", [critFile]);
+        if (contents.code === 0) {
+          pi.sendUserMessage(
+            `Review feedback from /crit-agent-review (${userCommentCount} comments, saved to ${critFile}):\n\n${contents.stdout}`,
+            { deliverAs: "followUp" }
+          );
+        }
+      }
+
+      if (kept > 0) {
+        summary += "\nKept findings:\n";
+        for (const f of findings) {
+          const fId = `agent-${findings.indexOf(f)}`;
+          if (!dismissedFindings.has(fId)) {
+            summary += `  ${f.priority} [${f.agent}] ${f.file}:${f.line} — ${f.title}\n`;
+          }
+        }
+      }
+
+      return {
+        content: [{ type: "text" as const, text: summary }],
+      };
+    },
+  });
+
+  // ── /crit-agent-review command ─────────────────────────
+
+  pi.registerCommand("crit-agent-review", {
+    description: "Multi-agent code review shown in the Crit native diff viewer — dispatches 5 specialist agents, opens findings in gutter",
+    handler: async (_args, ctx) => {
+      if (!ctx.hasUI) {
+        ctx.ui.notify("crit-agent-review requires interactive mode", "error");
+        return;
+      }
+
+      if (!existsSync(viewerPath)) {
+        ctx.ui.notify(
+          "Viewer not built. Run 'npm run build' in the pi-extension-crit package directory.",
+          "error"
+        );
+        return;
+      }
+
+      if (!openFn) {
+        try {
+          const glimpse = await import(glimpsePath);
+          openFn = glimpse.open;
+        } catch (e: any) {
+          ctx.ui.notify(`Failed to load Glimpse: ${e.message}`, "error");
+          return;
+        }
+      }
+
+      if (!existsSync(shellPath)) writeShellHTML();
+
+      const vcs = detectVcs(ctx.cwd);
+      if (vcs === "none") {
+        ctx.ui.notify("Not in a git or jj repository", "error");
+        return;
+      }
+
+      const arg = _args.trim() || null;
+      let target: ReviewTarget | null = null;
+      let diffArg: string | null = null;
+
+      // Parse shortcut args (same as /review)
+      if (arg) {
+        const a = arg.toLowerCase();
+        if (a === "trunk" || a === "since-trunk") {
+          if (vcs === "jj") {
+            target = { label: "changes since trunk", diff_cmd: "jj diff --from trunk()" };
+          } else {
+            const mergeBase = execQuiet(`git merge-base HEAD main`, ctx.cwd) || "main";
+            target = { label: "changes vs main", diff_cmd: `git diff ${mergeBase}` };
+          }
+        } else if (a === "wc" || a === "working-copy" || a === "uncommitted") {
+          if (vcs === "jj") {
+            target = { label: "working copy", diff_cmd: "jj diff" };
+          } else {
+            target = { label: "uncommitted changes", diff_cmd: "git diff HEAD" };
+          }
+        } else {
+          // Treat as revision/commit ref
+          if (vcs === "jj") {
+            target = { label: `revision ${arg}`, diff_cmd: `jj diff -r ${arg}` };
+            diffArg = arg;
+          } else {
+            target = { label: `commit ${arg.slice(0, 7)}`, diff_cmd: `git diff ${arg}~1..${arg}` };
+            diffArg = arg;
+          }
+        }
+      }
+
+      // Default: working copy for jj, uncommitted for git
+      if (!target) {
+        if (vcs === "jj") {
+          target = { label: "working copy", diff_cmd: "jj diff" };
+        } else {
+          target = { label: "uncommitted changes", diff_cmd: "git diff HEAD" };
+        }
+      }
+
+      // Prepare viewer data (same as /crit)
+      const repoName = basename(ctx.cwd);
+      let data: { staged: string; unstaged: string; untracked: { path: string; content: string }[]; repoName: string; branch: string; commits: any[] };
+
+      if (vcs === "jj") {
+        const [diffResult, branchResult] = await Promise.all([
+          pi.exec("jj", ["diff", "--git", "--context=100", ...(diffArg ? ["-r", diffArg] : target.diff_cmd.includes("--from") ? ["--from", "trunk()"] : [])]),
+          pi.exec("jj", ["log", "-r", "@-", "--no-graph", "-T", "bookmarks"]),
+        ]);
+        const unstaged = diffResult.stdout || "";
+        const branch = branchResult.stdout.trim();
+
+        if (!unstaged) {
+          ctx.ui.notify("No changes to review", "info");
+          return;
+        }
+
+        data = { staged: "", unstaged, untracked: [], repoName, branch, commits: [] };
+      } else {
+        const diffCmd = target.diff_cmd.replace(/^git diff /, "");
+        const diffParts = diffCmd.split(/\s+/);
+        const [diffResult, branchResult] = await Promise.all([
+          pi.exec("git", ["diff", "--context=100", ...diffParts]),
+          pi.exec("git", ["branch", "--show-current"]),
+        ]);
+        const unstaged = diffResult.stdout || "";
+        const branch = branchResult.stdout.trim();
+
+        if (!unstaged) {
+          ctx.ui.notify("No changes to review", "info");
+          return;
+        }
+
+        data = { staged: "", unstaged, untracked: [], repoName, branch, commits: [] };
+      }
+
+      // Prepare and store the viewer data for the tool to pick up
+      const viewerData = await prepareViewerData(data);
+      pendingCritReviewData = JSON.stringify(viewerData);
+
+      const guidelines = loadReviewGuidelines();
+      const prompt = buildCritReviewPrompt(target, guidelines);
+
+      ctx.ui.notify(`Starting agent review: ${target.label} (5 agents) — will open in Crit when complete`, "info");
+      pi.sendUserMessage(prompt);
     },
   });
 
